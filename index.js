@@ -52,6 +52,7 @@ const DEFAULTS = Object.freeze({
     showInfoPanel: true,
     wheel: true,
     fill: false,
+    exportStyled: false,
 });
 
 const FLIP_MS = 560;
@@ -1346,6 +1347,7 @@ const FORM = [
     ['showImages', '그림 보이기', 'check'],
     ['showInfoPanel', '상태창 보이기', 'check'],
     ['wheel', '휠로 넘기기', 'check'],
+    ['exportStyled', 'EPUB 꾸밈 유지', 'check'],
 ];
 
 function buildSettingsForm() {
@@ -2192,22 +2194,27 @@ const EXPORT_KEEP = new Set(['p', 'br', 'hr', 'em', 'i', 'strong', 'b', 'u', 's'
 const EXPORT_BLOCK = /^(?:p|div|section|li|h[1-6]|blockquote|pre|tr|ul|ol|table|details|summary)$/;
 
 // 전자책 리더가 읽을 수 있게 꾸밈과 낯선 태그를 걷어 낸다.
-function cleanForExport(root, keepImages) {
+// keepStyle(EPUB 꾸밈 유지): 태그의 class·style과 낯선 태그를 남겨, HTML로 만든 패널의 모양을 살린다.
+function cleanForExport(root, keepImages, keepStyle) {
     for (const el of root.querySelectorAll(keepImages ? EXPORT_DROP : `${EXPORT_DROP},${EXPORT_IMAGES}`)) el.remove();
     const doc = root.ownerDocument;
     for (const el of [...root.querySelectorAll('*')].reverse()) {
         const own = el.classList.contains('pbk-x');
         const href = el.localName === 'a' ? el.getAttribute('href') : null;
-        const cls = own ? el.getAttribute('class') : null;
+        const cls = own || keepStyle ? el.getAttribute('class') : null;
+        const css = keepStyle ? el.getAttribute('style') : null;
         const src = el.localName === 'img' ? el.getAttribute('src') : null;
         const alt = el.localName === 'img' ? el.getAttribute('alt') || '' : null;
         for (const a of [...el.attributes]) el.removeAttribute(a.name);
         if (src) { el.setAttribute('src', src); el.setAttribute('alt', alt); }
+        if (css) el.setAttribute('style', css);
         if (cls) el.setAttribute('class', cls.replace(/\bpbk-msg\b\s*/, '').trim());
         if (href && /^https?:/i.test(href)) el.setAttribute('href', href);
         if (EXPORT_KEEP.has(el.localName)) continue;
+        if (keepStyle && /^[a-z][a-z0-9-]*$/.test(el.localName)) continue;
         const block = [...el.children].some((c) => EXPORT_BLOCK.test(c.localName)) || EXPORT_BLOCK.test(el.localName);
         const rep = doc.createElement(block ? 'div' : 'span');
+        for (const a of [...el.attributes]) rep.setAttribute(a.name, a.value);
         rep.append(...el.childNodes);
         el.replaceWith(rep);
     }
@@ -2248,10 +2255,13 @@ async function embedImages(box, images) {
 }
 
 // { chapters: 장마다 { label, xhtml, text }, images: 책에 담을 그림 파일들 }
-async function exportChapters(withImages) {
+async function exportChapters(withImages, styled) {
     const { chat, groupId } = ctx();
     const s = S();
     const images = new Map();
+    const styles = new Set(); // 메시지에 들어 있던 <style>. 책의 CSS 파일로 옮긴다.
+    // 실리태번은 메시지 속 CSS를 '.mes_text' 안에서만 먹도록 바꿔 두므로, 꾸밈을 살릴 때는 같은 이름을 붙인다.
+    const scope = styled ? ' mes_text' : '';
     const chapters = buildChapters();
     const doc = document.implementation.createHTMLDocument('');
     const ser = new XMLSerializer();
@@ -2263,13 +2273,14 @@ async function exportChapters(withImages) {
             if (!m) return '';
             if (it.user) {
                 const name = s.userStyle === 'note' ? `<div class="pbk-x name">${esc(m.name)}</div>` : '';
-                return `<section class="pbk-x pbk-msg user ${s.userStyle}">${name}${formatMessage(m, it.idx)}</section>`;
+                return `<section class="pbk-x pbk-msg user ${s.userStyle}${scope}">${name}${formatMessage(m, it.idx)}</section>`;
             }
             const speaker = groupId && m.name ? `<div class="pbk-x name">${esc(m.name)}</div>` : '';
-            return `<section class="pbk-x pbk-msg body">${speaker}${withImages ? mediaHtml(m) : ''}${formatMessage(m, it.idx)}</section>`;
+            return `<section class="pbk-x pbk-msg body${scope}">${speaker}${withImages ? mediaHtml(m) : ''}${formatMessage(m, it.idx)}</section>`;
         }).join('');
         if (!s.showInfoPanel) removeRenderedInfoPanels(box);
-        cleanForExport(box, withImages);
+        if (styled) for (const el of box.querySelectorAll('style')) if (el.textContent.trim()) styles.add(el.textContent.trim());
+        cleanForExport(box, withImages, styled);
         if (withImages) await embedImages(box, images);
         out.push({
             label: chapterLabel(ch),
@@ -2278,7 +2289,7 @@ async function exportChapters(withImages) {
         });
         if (n % 10 === 9) await new Promise((r) => setTimeout(r)); // 긴 책에서 화면이 멎지 않게
     }
-    return { chapters: out, images: [...images.values()].filter(Boolean), missed: [...images.values()].filter((x) => !x).length };
+    return { chapters: out, images: [...images.values()].filter(Boolean), missed: [...images.values()].filter((x) => !x).length, css: [...styles].join('\n\n') };
 }
 
 // 압축하지 않는 ZIP. EPUB은 첫 파일(mimetype)을 압축 없이 담아야 한다.
@@ -2381,7 +2392,7 @@ async function exportBook(kind) {
     toast('책을 만드는 중…');
     try {
         const title = bookTitle() || 'Paperback';
-        const { chapters, images, missed } = await exportChapters(kind === 'epub' && S().showImages);
+        const { chapters, images, missed, css } = await exportChapters(kind === 'epub' && S().showImages, kind === 'epub' && S().exportStyled);
         if (kind === 'txt') {
             const body = chapters.map((c) => `${c.label}\n\n${c.text}`).join('\n\n\n');
             saveBlob(new Blob([`﻿${title}\n\n\n${body}\n`], { type: 'text/plain;charset=utf-8' }), exportFileName('txt'));
@@ -2412,7 +2423,7 @@ async function exportBook(kind) {
                     + `<head><meta name="dtb:uid" content="urn:uuid:${id}"/></head><docTitle><text>${esc(xmlSafe(title))}</text></docTitle><navMap>`
                     + chapters.map((c, n) => `<navPoint id="n${n}" playOrder="${n + 1}"><navLabel><text>${esc(c.label)}</text></navLabel><content src="${file(n)}"/></navPoint>`).join('')
                     + '</navMap></ncx>\n' },
-                { name: 'OEBPS/style.css', data: EPUB_CSS },
+                { name: 'OEBPS/style.css', data: css ? `${EPUB_CSS}\n/* 메시지에 들어 있던 꾸밈 */\n${css}\n` : EPUB_CSS },
                 ...images.map((im) => ({ name: `OEBPS/${im.name}`, data: im.data })),
                 ...chapters.map((c, n) => ({ name: `OEBPS/${file(n)}`, data: page(c.label, `<h2 class="ch">${esc(c.label)}</h2>\n${c.xhtml}`) })),
             ];
