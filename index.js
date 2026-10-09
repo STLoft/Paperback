@@ -2169,22 +2169,27 @@ async function deleteFromBook(idx) {
 
 // ── 내보내기 (EPUB · 텍스트) ─────────────────────────────────────────────
 // 책에 보이는 대로 뽑는다: 장 나눔, 유저 메시지 넣기·표시 방식, 상태창 보이기 설정을 그대로 따른다.
-// 그림·영상은 넣지 않는다.
+// EPUB에는 '그림 보이기'가 켜져 있으면 그림도 담는다. 영상·소리는 넣지 않는다.
 
-const EXPORT_DROP = 'script,style,link,meta,img,picture,svg,canvas,video,audio,iframe,object,embed,figure,form,button,input,select,textarea';
+const EXPORT_DROP = 'script,style,link,meta,source,svg,canvas,video,audio,iframe,object,embed,form,button,input,select,textarea';
+const EXPORT_IMAGES = 'img,picture,figure';
+const IMAGE_EXT = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp', 'image/svg+xml': 'svg' };
 const EXPORT_KEEP = new Set(['p', 'br', 'hr', 'em', 'i', 'strong', 'b', 'u', 's', 'del', 'q', 'span', 'div', 'section', 'blockquote', 'pre', 'code',
-    'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'a', 'table', 'thead', 'tbody', 'tr', 'td', 'th', 'sup', 'sub', 'small', 'mark']);
+    'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'a', 'table', 'thead', 'tbody', 'tr', 'td', 'th', 'sup', 'sub', 'small', 'mark', 'img', 'figure']);
 const EXPORT_BLOCK = /^(?:p|div|section|li|h[1-6]|blockquote|pre|tr|ul|ol|table|details|summary)$/;
 
 // 전자책 리더가 읽을 수 있게 꾸밈과 낯선 태그를 걷어 낸다.
-function cleanForExport(root) {
-    for (const el of root.querySelectorAll(EXPORT_DROP)) el.remove();
+function cleanForExport(root, keepImages) {
+    for (const el of root.querySelectorAll(keepImages ? EXPORT_DROP : `${EXPORT_DROP},${EXPORT_IMAGES}`)) el.remove();
     const doc = root.ownerDocument;
     for (const el of [...root.querySelectorAll('*')].reverse()) {
         const own = el.classList.contains('pbk-x');
         const href = el.localName === 'a' ? el.getAttribute('href') : null;
         const cls = own ? el.getAttribute('class') : null;
+        const src = el.localName === 'img' ? el.getAttribute('src') : null;
+        const alt = el.localName === 'img' ? el.getAttribute('alt') || '' : null;
         for (const a of [...el.attributes]) el.removeAttribute(a.name);
+        if (src) { el.setAttribute('src', src); el.setAttribute('alt', alt); }
         if (cls) el.setAttribute('class', cls.replace(/\bpbk-msg\b\s*/, '').trim());
         if (href && /^https?:/i.test(href)) el.setAttribute('href', href);
         if (EXPORT_KEEP.has(el.localName)) continue;
@@ -2207,10 +2212,33 @@ function nodeText(n, pre = false) {
 const tidyText = (t) => t.split('\n').map((l) => l.trim()).join('\n').replace(/\n{3,}/g, '\n\n').trim();
 const xmlSafe = (t) => t.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F￾￿]/g, '');
 
-// 장마다 { label, xhtml, text }
-async function exportChapters() {
+// 그림을 받아 책 안의 파일로 바꾼다. 받지 못한 그림(다른 사이트가 막은 것 등)은 뺀다.
+async function embedImages(box, images) {
+    for (const img of [...box.querySelectorAll('img')]) {
+        let url = '';
+        try { url = new URL(img.getAttribute('src') || '', location.href).href; } catch { /* 잘못된 주소 */ }
+        if (url && !images.has(url)) {
+            let entry = null;
+            try {
+                const res = await fetch(url);
+                const blob = res.ok ? await res.blob() : null;
+                const type = blob ? blob.type.split(';')[0] : '';
+                if (IMAGE_EXT[type]) entry = { name: `img/i${String(images.size + 1).padStart(4, '0')}.${IMAGE_EXT[type]}`, type, data: new Uint8Array(await blob.arrayBuffer()) };
+            } catch { /* 받지 못함 */ }
+            images.set(url, entry);
+        }
+        const entry = images.get(url);
+        if (entry) img.setAttribute('src', entry.name);
+        else img.remove();
+    }
+    for (const fig of box.querySelectorAll('figure')) if (!fig.querySelector('img')) fig.remove();
+}
+
+// { chapters: 장마다 { label, xhtml, text }, images: 책에 담을 그림 파일들 }
+async function exportChapters(withImages) {
     const { chat, groupId } = ctx();
     const s = S();
+    const images = new Map();
     const chapters = buildChapters();
     const doc = document.implementation.createHTMLDocument('');
     const ser = new XMLSerializer();
@@ -2225,10 +2253,11 @@ async function exportChapters() {
                 return `<section class="pbk-x pbk-msg user ${s.userStyle}">${name}${formatMessage(m, it.idx)}</section>`;
             }
             const speaker = groupId && m.name ? `<div class="pbk-x name">${esc(m.name)}</div>` : '';
-            return `<section class="pbk-x pbk-msg body">${speaker}${formatMessage(m, it.idx)}</section>`;
+            return `<section class="pbk-x pbk-msg body">${speaker}${withImages ? mediaHtml(m) : ''}${formatMessage(m, it.idx)}</section>`;
         }).join('');
         if (!s.showInfoPanel) removeRenderedInfoPanels(box);
-        cleanForExport(box);
+        cleanForExport(box, withImages);
+        if (withImages) await embedImages(box, images);
         out.push({
             label: chapterLabel(ch),
             xhtml: xmlSafe([...box.childNodes].map((c) => ser.serializeToString(c)).join('\n')),
@@ -2236,7 +2265,7 @@ async function exportChapters() {
         });
         if (n % 10 === 9) await new Promise((r) => setTimeout(r)); // 긴 책에서 화면이 멎지 않게
     }
-    return out;
+    return { chapters: out, images: [...images.values()].filter(Boolean), missed: [...images.values()].filter((x) => !x).length };
 }
 
 // 압축하지 않는 ZIP. EPUB은 첫 파일(mimetype)을 압축 없이 담아야 한다.
@@ -2315,6 +2344,8 @@ section.user { margin: 1.6em 0 1.4em; }
 section.user.note { padding-left: 0.9em; border-left: 2px solid #999; font-size: 0.9em; color: #666; }
 section.user.note p { text-indent: 0; }
 section.user.talk, section.user.talk q { color: #6e4a22; }
+img { max-width: 100%; height: auto; }
+figure { margin: 1em 0; text-align: center; }
 div.name { font-size: 0.8em; letter-spacing: 0.15em; margin-bottom: 0.3em; color: #9c4a32; }
 `;
 
@@ -2337,7 +2368,7 @@ async function exportBook(kind) {
     toast('책을 만드는 중…');
     try {
         const title = bookTitle() || 'Paperback';
-        const chapters = await exportChapters();
+        const { chapters, images, missed } = await exportChapters(kind === 'epub' && S().showImages);
         if (kind === 'txt') {
             const body = chapters.map((c) => `${c.label}\n\n${c.text}`).join('\n\n\n');
             saveBlob(new Blob([`﻿${title}\n\n\n${body}\n`], { type: 'text/plain;charset=utf-8' }), exportFileName('txt'));
@@ -2360,6 +2391,7 @@ async function exportBook(kind) {
                     + '<manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>'
                     + '<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/><item id="css" href="style.css" media-type="text/css"/>'
                     + chapters.map((c, n) => `<item id="c${n}" href="${file(n)}" media-type="application/xhtml+xml"/>`).join('')
+                    + images.map((im, n) => `<item id="i${n}" href="${im.name}" media-type="${im.type}"/>`).join('')
                     + `</manifest>\n<spine toc="ncx">${chapters.map((c, n) => `<itemref idref="c${n}"/>`).join('')}</spine>\n</package>\n` },
                 { name: 'OEBPS/nav.xhtml', data: page(title, `<nav epub:type="toc"><h1>${esc(xmlSafe(title))}</h1><ol>`
                     + `${chapters.map((c, n) => `<li><a href="${file(n)}">${esc(c.label)}</a></li>`).join('')}</ol></nav>`) },
@@ -2368,11 +2400,12 @@ async function exportBook(kind) {
                     + chapters.map((c, n) => `<navPoint id="n${n}" playOrder="${n + 1}"><navLabel><text>${esc(c.label)}</text></navLabel><content src="${file(n)}"/></navPoint>`).join('')
                     + '</navMap></ncx>\n' },
                 { name: 'OEBPS/style.css', data: EPUB_CSS },
+                ...images.map((im) => ({ name: `OEBPS/${im.name}`, data: im.data })),
                 ...chapters.map((c, n) => ({ name: `OEBPS/${file(n)}`, data: page(c.label, `<h2 class="ch">${esc(c.label)}</h2>\n${c.xhtml}`) })),
             ];
             saveBlob(zipStore(files, 'application/epub+zip'), exportFileName('epub'));
         }
-        toast(`${chapters.length}개 장을 내보냈습니다`);
+        toast(`${chapters.length}개 장을 내보냈습니다${images.length ? ` · 그림 ${images.length}장` : ''}${missed ? ` (받지 못한 그림 ${missed}장)` : ''}`);
     } catch (err) {
         console.error('[Paperback]', err);
         toast('내보내지 못했습니다');
