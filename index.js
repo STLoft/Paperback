@@ -485,6 +485,25 @@ function normAnchor(o) {
 
 const chapterOfAnchor = (a) => chapterOfMessage(a.mkey, a.midx);
 
+// HTML로 만든 패널은 overflow: hidden 이나 안쪽 스크롤, inline-block 으로 짜인 경우가 많은데,
+// 그런 상자는 쪽 경계에서 나뉘지 못해 한 쪽보다 길면 아래가 잘려 사라진다.
+// 한 쪽보다 길거나 안에서 스크롤해야 하는 상자만 골라 풀어 주어 다음 쪽으로 이어지게 한다.
+const NEVER_BOX = new Set(['P', 'Q', 'EM', 'I', 'B', 'STRONG', 'BR', 'CODE', 'U', 'S', 'DEL', 'MARK', 'SMALL', 'SUP', 'SUB', 'HR', 'IMG', 'VIDEO', 'AUDIO']);
+function unlockTallBlocks() {
+    const limit = st.geo.vh * 0.9;
+    for (const box of dom.flow.querySelectorAll('.pbk-msg *')) {
+        if (NEVER_BOX.has(box.tagName)) continue;
+        const cs = getComputedStyle(box);
+        const clipped = cs.overflowY !== 'visible' || cs.overflowX !== 'visible';
+        const inline = /^inline-(?:block|flex|grid|table)$/.test(cs.display);
+        if (!clipped && !inline) continue;
+        const scrolls = /auto|scroll/.test(cs.overflowY) && box.scrollHeight > box.clientHeight + 1;
+        if (!scrolls && box.offsetHeight <= limit) continue;
+        box.classList.add('pbk-split');
+        if (inline) box.style.setProperty('display', cs.display.replace('inline-', ''), 'important');
+    }
+}
+
 function renderChapter(i) {
     const ch = st.chapters[i];
     clearHighlight();
@@ -492,6 +511,7 @@ function renderChapter(i) {
     dom.flow.classList.toggle('pbk-noimg', !S().showImages);
     dom.flow.dataset.user = S().userStyle;
     if (!S().showInfoPanel) removeRenderedInfoPanels(dom.flow);
+    unlockTallBlocks();
     for (const a of dom.flow.querySelectorAll('a[href]')) {
         if (/^https?:/i.test(a.getAttribute('href'))) { a.target = '_blank'; a.rel = 'noopener noreferrer'; }
     }

@@ -251,17 +251,43 @@ body.pbk-open {
     break-after: avoid;
 }
 
+/* 장면 구분선: 가는 선 두 줄 사이에 작은 마름모. 테마가 hr에 입힌 배경·테두리는 지운다. */
 .pbk-flow hr {
-    border: none;
-    text-align: center;
-    margin: 1.2em 0;
-    height: auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 56%;
+    height: 1em;
+    margin: 1.5em auto;
+    padding: 0;
+    border: none !important;
+    border-radius: 0;
+    box-shadow: none;
+    opacity: 1;
+    overflow: visible;
+    break-inside: avoid;
+    --pbk-rule: color-mix(in srgb, var(--pbk-muted) 45%, transparent);
+    background:
+        linear-gradient(var(--pbk-rule), var(--pbk-rule)) left center / calc(50% - 1em) 1px no-repeat,
+        linear-gradient(var(--pbk-rule), var(--pbk-rule)) right center / calc(50% - 1em) 1px no-repeat !important;
 }
 
 .pbk-flow hr::after {
-    content: "＊　＊　＊";
-    color: var(--pbk-muted);
-    font-size: 0.8em;
+    content: "";
+    width: 0.34em;
+    height: 0.34em;
+    background: var(--pbk-accent);
+    opacity: 0.75;
+    transform: rotate(45deg);
+}
+
+/* 한 쪽보다 긴 상자를 다음 쪽으로 이어지게 푼 것 (unlockTallBlocks) */
+.pbk-flow .pbk-split {
+    overflow: visible !important;
+    height: auto !important;
+    max-height: none !important;
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
 }
 
 .pbk-flow blockquote {
