@@ -353,6 +353,29 @@ body.pbk-open {
     color: var(--pbk-muted);
 }
 
+/* 유저 표시: 인용(기본) · 본문(본문과 같은 모양) · 대사(대사 색) */
+.pbk-flow[data-user="plain"] .pbk-prelude,
+.pbk-flow[data-user="talk"] .pbk-prelude {
+    padding: 0;
+    border-left: none;
+    font-size: inherit;
+    color: inherit;
+}
+
+.pbk-flow[data-user="plain"] .pbk-prelude p,
+.pbk-flow[data-user="talk"] .pbk-prelude p {
+    text-indent: var(--pbk-indent);
+}
+
+.pbk-flow[data-user="plain"] .pbk-prelude-name,
+.pbk-flow[data-user="talk"] .pbk-prelude-name {
+    display: none;
+}
+
+.pbk-flow[data-user="talk"] .pbk-prelude {
+    color: var(--pbk-quote);
+}
+
 .pbk-body + .pbk-body,
 .pbk-prelude + .pbk-body {
     margin-top: 1.2em;

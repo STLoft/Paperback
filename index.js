@@ -45,6 +45,7 @@ const DEFAULTS = Object.freeze({
     sound: true,
     volume: 0.5,
     includeUser: false,
+    userStyle: 'note',
     chapterChars: 5000,
     showImages: true,
     showInfoPanel: true,
@@ -486,6 +487,7 @@ function renderChapter(i) {
     clearHighlight();
     dom.flow.innerHTML = chapterHtml(ch);
     dom.flow.classList.toggle('pbk-noimg', !S().showImages);
+    dom.flow.dataset.user = S().userStyle;
     if (!S().showInfoPanel) removeRenderedInfoPanels(dom.flow);
     for (const a of dom.flow.querySelectorAll('a[href]')) {
         if (/^https?:/i.test(a.getAttribute('href'))) { a.target = '_blank'; a.rel = 'noopener noreferrer'; }
@@ -1327,6 +1329,7 @@ const FORM = [
     ['volume', '소리 크기', 'range', [0, 1, 0.05, '%']],
     ['chapterChars', '장 분량', 'range', [2000, 15000, 500, '자']],
     ['includeUser', '유저 메시지', 'check'],
+    ['userStyle', '유저 표시', 'seg', { note: '인용', plain: '본문', talk: '대사' }],
     ['showImages', '그림 보이기', 'check'],
     ['showInfoPanel', '상태창 보이기', 'check'],
     ['wheel', '휠로 넘기기', 'check'],
@@ -1359,6 +1362,8 @@ function buildSettingsForm() {
         }
         return `<div class="pbk-row pbk-row-${type}"><div class="pbk-row-label">${esc(label)}</div><div class="pbk-row-ctl">${ctl}</div></div>${extra}`;
     });
+    rows.push('<div class="pbk-row"><div class="pbk-row-label">내보내기</div><div class="pbk-row-ctl">'
+        + '<button class="pbk-mini" data-act="export-epub">EPUB</button><button class="pbk-mini" data-act="export-txt">텍스트</button></div></div>');
     rows.push('<div class="pbk-row"><button class="pbk-reset">기본값으로</button></div>');
     return rows.join('');
 }
@@ -1396,7 +1401,7 @@ function onSettingChange(key, raw) {
         rebuild();
     } else if (key === 'chapterChars') {
         scheduleRebuild();
-    } else if (['font', 'fontSize', 'lineHeight', 'margin', 'align', 'indent', 'layout', 'fill', 'showImages'].includes(key)) {
+    } else if (['font', 'fontSize', 'lineHeight', 'margin', 'align', 'indent', 'layout', 'fill', 'showImages', 'userStyle'].includes(key)) {
         scheduleRelayout();
     } else if (key === 'sound' && value) {
         playFlip();
@@ -1564,6 +1569,8 @@ function bindDom() {
         else if (act === 'edit-cancel') closeEditor();
         else if (act === 'edit-save') saveEditor();
         else if (act === 'rooms') toggleRooms();
+        else if (act === 'export-epub') exportBook('epub');
+        else if (act === 'export-txt') exportBook('txt');
         else if (act === 'theme-add') addCustomTheme();
         else if (act === 'theme-del') deleteCustomTheme();
         else if (act === 'font-add') addCustomFont();
@@ -2159,6 +2166,220 @@ async function deleteFromBook(idx) {
 }
 
 // ── 등록 ────────────────────────────────────────────────────────────────
+
+// ── 내보내기 (EPUB · 텍스트) ─────────────────────────────────────────────
+// 책에 보이는 대로 뽑는다: 장 나눔, 유저 메시지 넣기·표시 방식, 상태창 보이기 설정을 그대로 따른다.
+// 그림·영상은 넣지 않는다.
+
+const EXPORT_DROP = 'script,style,link,meta,img,picture,svg,canvas,video,audio,iframe,object,embed,figure,form,button,input,select,textarea';
+const EXPORT_KEEP = new Set(['p', 'br', 'hr', 'em', 'i', 'strong', 'b', 'u', 's', 'del', 'q', 'span', 'div', 'section', 'blockquote', 'pre', 'code',
+    'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'a', 'table', 'thead', 'tbody', 'tr', 'td', 'th', 'sup', 'sub', 'small', 'mark']);
+const EXPORT_BLOCK = /^(?:p|div|section|li|h[1-6]|blockquote|pre|tr|ul|ol|table|details|summary)$/;
+
+// 전자책 리더가 읽을 수 있게 꾸밈과 낯선 태그를 걷어 낸다.
+function cleanForExport(root) {
+    for (const el of root.querySelectorAll(EXPORT_DROP)) el.remove();
+    const doc = root.ownerDocument;
+    for (const el of [...root.querySelectorAll('*')].reverse()) {
+        const own = el.classList.contains('pbk-x');
+        const href = el.localName === 'a' ? el.getAttribute('href') : null;
+        const cls = own ? el.getAttribute('class') : null;
+        for (const a of [...el.attributes]) el.removeAttribute(a.name);
+        if (cls) el.setAttribute('class', cls.replace(/\bpbk-msg\b\s*/, '').trim());
+        if (href && /^https?:/i.test(href)) el.setAttribute('href', href);
+        if (EXPORT_KEEP.has(el.localName)) continue;
+        const block = [...el.children].some((c) => EXPORT_BLOCK.test(c.localName)) || EXPORT_BLOCK.test(el.localName);
+        const rep = doc.createElement(block ? 'div' : 'span');
+        rep.append(...el.childNodes);
+        el.replaceWith(rep);
+    }
+}
+
+function nodeText(n, pre = false) {
+    if (n.nodeType === Node.TEXT_NODE) return pre ? n.data : n.data.replace(/\s+/g, ' ');
+    if (n.nodeType !== Node.ELEMENT_NODE) return '';
+    if (n.localName === 'br') return '\n';
+    if (n.localName === 'hr') return '\n\n＊　＊　＊\n\n';
+    const inner = [...n.childNodes].map((c) => nodeText(c, pre || n.localName === 'pre')).join('');
+    return EXPORT_BLOCK.test(n.localName) ? `\n\n${inner.trim()}\n\n` : inner;
+}
+
+const tidyText = (t) => t.split('\n').map((l) => l.trim()).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+const xmlSafe = (t) => t.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F￾￿]/g, '');
+
+// 장마다 { label, xhtml, text }
+async function exportChapters() {
+    const { chat, groupId } = ctx();
+    const s = S();
+    const chapters = buildChapters();
+    const doc = document.implementation.createHTMLDocument('');
+    const ser = new XMLSerializer();
+    const out = [];
+    for (const [n, ch] of chapters.entries()) {
+        const box = doc.createElement('div');
+        box.innerHTML = ch.msgs.map((it) => {
+            const m = chat[it.idx];
+            if (!m) return '';
+            if (it.user) {
+                const name = s.userStyle === 'note' ? `<div class="pbk-x name">${esc(m.name)}</div>` : '';
+                return `<section class="pbk-x pbk-msg user ${s.userStyle}">${name}${formatMessage(m, it.idx)}</section>`;
+            }
+            const speaker = groupId && m.name ? `<div class="pbk-x name">${esc(m.name)}</div>` : '';
+            return `<section class="pbk-x pbk-msg body">${speaker}${formatMessage(m, it.idx)}</section>`;
+        }).join('');
+        if (!s.showInfoPanel) removeRenderedInfoPanels(box);
+        cleanForExport(box);
+        out.push({
+            label: chapterLabel(ch),
+            xhtml: xmlSafe([...box.childNodes].map((c) => ser.serializeToString(c)).join('\n')),
+            text: tidyText([...box.children].map((c) => nodeText(c)).join('\n\n')),
+        });
+        if (n % 10 === 9) await new Promise((r) => setTimeout(r)); // 긴 책에서 화면이 멎지 않게
+    }
+    return out;
+}
+
+// 압축하지 않는 ZIP. EPUB은 첫 파일(mimetype)을 압축 없이 담아야 한다.
+const CRC_TABLE = (() => {
+    const t = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+        let c = n;
+        for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+        t[n] = c >>> 0;
+    }
+    return t;
+})();
+
+function crc32(bytes) {
+    let c = 0xFFFFFFFF;
+    for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+    return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+function zipStore(files, type) {
+    const enc = new TextEncoder();
+    const d = new Date();
+    const time = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
+    const date = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+    const parts = [];
+    const central = [];
+    let offset = 0;
+    for (const f of files) {
+        const name = enc.encode(f.name);
+        const data = typeof f.data === 'string' ? enc.encode(f.data) : f.data;
+        const crc = crc32(data);
+        const local = new DataView(new ArrayBuffer(30));
+        local.setUint32(0, 0x04034b50, true);
+        local.setUint16(4, 20, true);
+        local.setUint16(10, time, true);
+        local.setUint16(12, date, true);
+        local.setUint32(14, crc, true);
+        local.setUint32(18, data.length, true);
+        local.setUint32(22, data.length, true);
+        local.setUint16(26, name.length, true);
+        parts.push(new Uint8Array(local.buffer), name, data);
+        const cen = new DataView(new ArrayBuffer(46));
+        cen.setUint32(0, 0x02014b50, true);
+        cen.setUint16(4, 20, true);
+        cen.setUint16(6, 20, true);
+        cen.setUint16(12, time, true);
+        cen.setUint16(14, date, true);
+        cen.setUint32(16, crc, true);
+        cen.setUint32(20, data.length, true);
+        cen.setUint32(24, data.length, true);
+        cen.setUint16(28, name.length, true);
+        cen.setUint32(42, offset, true);
+        central.push(new Uint8Array(cen.buffer), name);
+        offset += 30 + name.length + data.length;
+    }
+    const end = new DataView(new ArrayBuffer(22));
+    end.setUint32(0, 0x06054b50, true);
+    end.setUint16(8, files.length, true);
+    end.setUint16(10, files.length, true);
+    end.setUint32(12, central.reduce((n, p) => n + p.length, 0), true);
+    end.setUint32(16, offset, true);
+    return new Blob([...parts, ...central, new Uint8Array(end.buffer)], { type });
+}
+
+const EPUB_CSS = `body { margin: 0; padding: 0 1em; line-height: 1.8; }
+h2.ch { text-align: center; font-size: 1em; font-weight: normal; letter-spacing: 0.3em; margin: 3em 0 2.5em; }
+p { margin: 0 0 0.55em; text-indent: 1em; }
+q { quotes: none; }
+q:before, q:after { content: none; }
+hr { border: none; text-align: center; margin: 1.5em 0; }
+hr:after { content: "＊　＊　＊"; font-size: 0.8em; }
+blockquote { margin: 0.8em 0 0.8em 1em; }
+pre, code { white-space: pre-wrap; font-size: 0.85em; }
+section.body { margin-top: 1.2em; }
+section.user { margin: 1.6em 0 1.4em; }
+section.user.note { padding-left: 0.9em; border-left: 2px solid #999; font-size: 0.9em; color: #666; }
+section.user.note p { text-indent: 0; }
+section.user.talk, section.user.talk q { color: #6e4a22; }
+div.name { font-size: 0.8em; letter-spacing: 0.15em; margin-bottom: 0.3em; color: #9c4a32; }
+`;
+
+function saveBlob(blob, name) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+}
+
+const exportFileName = (ext) => `${String(st.chatId || bookTitle() || 'paperback').replace(/[\\/:*?"<>|\u0000-\u001F]+/g, ' ').trim().slice(0, 120)}.${ext}`;
+
+async function exportBook(kind) {
+    if (!st.open || st.busy) return;
+    if (generating()) { toast('응답을 쓰는 중에는 내보낼 수 없습니다'); return; }
+    st.busy = true;
+    toast('책을 만드는 중…');
+    try {
+        const title = bookTitle() || 'Paperback';
+        const chapters = await exportChapters();
+        if (kind === 'txt') {
+            const body = chapters.map((c) => `${c.label}\n\n${c.text}`).join('\n\n\n');
+            saveBlob(new Blob([`﻿${title}\n\n\n${body}\n`], { type: 'text/plain;charset=utf-8' }), exportFileName('txt'));
+        } else {
+            const id = crypto.randomUUID ? crypto.randomUUID() : newId();
+            const file = (n) => `ch${String(n + 1).padStart(4, '0')}.xhtml`;
+            const page = (heading, inner) => '<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html>\n'
+                + '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="ko" lang="ko">\n'
+                + `<head><meta charset="utf-8"/><title>${esc(heading)}</title><link rel="stylesheet" type="text/css" href="style.css"/></head>\n`
+                + `<body>\n${inner}\n</body>\n</html>\n`;
+            const files = [
+                { name: 'mimetype', data: 'application/epub+zip' },
+                { name: 'META-INF/container.xml', data: '<?xml version="1.0" encoding="utf-8"?>\n<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+                    + '<rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>\n' },
+                { name: 'OEBPS/content.opf', data: '<?xml version="1.0" encoding="utf-8"?>\n'
+                    + '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid" xml:lang="ko">\n'
+                    + '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
+                    + `<dc:identifier id="bookid">urn:uuid:${id}</dc:identifier><dc:title>${esc(xmlSafe(title))}</dc:title><dc:language>ko</dc:language>`
+                    + `<meta property="dcterms:modified">${new Date().toISOString().replace(/\.\d+Z$/, 'Z')}</meta></metadata>\n`
+                    + '<manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>'
+                    + '<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/><item id="css" href="style.css" media-type="text/css"/>'
+                    + chapters.map((c, n) => `<item id="c${n}" href="${file(n)}" media-type="application/xhtml+xml"/>`).join('')
+                    + `</manifest>\n<spine toc="ncx">${chapters.map((c, n) => `<itemref idref="c${n}"/>`).join('')}</spine>\n</package>\n` },
+                { name: 'OEBPS/nav.xhtml', data: page(title, `<nav epub:type="toc"><h1>${esc(xmlSafe(title))}</h1><ol>`
+                    + `${chapters.map((c, n) => `<li><a href="${file(n)}">${esc(c.label)}</a></li>`).join('')}</ol></nav>`) },
+                { name: 'OEBPS/toc.ncx', data: '<?xml version="1.0" encoding="utf-8"?>\n<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">'
+                    + `<head><meta name="dtb:uid" content="urn:uuid:${id}"/></head><docTitle><text>${esc(xmlSafe(title))}</text></docTitle><navMap>`
+                    + chapters.map((c, n) => `<navPoint id="n${n}" playOrder="${n + 1}"><navLabel><text>${esc(c.label)}</text></navLabel><content src="${file(n)}"/></navPoint>`).join('')
+                    + '</navMap></ncx>\n' },
+                { name: 'OEBPS/style.css', data: EPUB_CSS },
+                ...chapters.map((c, n) => ({ name: `OEBPS/${file(n)}`, data: page(c.label, `<h2 class="ch">${esc(c.label)}</h2>\n${c.xhtml}`) })),
+            ];
+            saveBlob(zipStore(files, 'application/epub+zip'), exportFileName('epub'));
+        }
+        toast(`${chapters.length}개 장을 내보냈습니다`);
+    } catch (err) {
+        console.error('[Paperback]', err);
+        toast('내보내지 못했습니다');
+    } finally {
+        st.busy = false;
+    }
+}
 
 function addMenuItem() {
     if (document.getElementById('pbk_wand')) return;
