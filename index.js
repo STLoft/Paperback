@@ -46,6 +46,7 @@ const DEFAULTS = Object.freeze({
     includeUser: false,
     chapterChars: 5000,
     showImages: true,
+    showInfoPanel: true,
     wheel: true,
 });
 
@@ -137,7 +138,81 @@ let dom = null;
 
 // ── 장 만들기 ────────────────────────────────────────────────────────────
 
-const msgText = (m) => (m?.extra?.display_text || m?.mes || '');
+const rawText = (m) => (m?.extra?.display_text || m?.mes || '');
+
+// 상태창(인포패널): <Info_panel>·<status> 같은 태그, 같은 이름의 코드블록, info-panel 류 class가 붙은 <div>.
+// '상태창 보이기'를 끄면 본문에서 빼고 그린다. 채팅 원문은 건드리지 않는다.
+const INFO_TAGS = '(?:[a-z0-9]+[-_])*(?:info(?:[-_]?(?:panel|box|block|card))?|status(?:[-_]?(?:panel|box|block|card|window))?|stat(?:s|[-_]?block)?)';
+const INFO_CLASSES = '(?:custom[-_]?info[-_]?card|info[-_]?(?:panel|box|block|card)|status[-_]?(?:panel|box|block|card|window))';
+const TAG_END = '(?=[\\s/>])';
+const SELF_CLOSED = /\/\s*>$/;
+
+// from에서 열린 블록이 끝나는 자리. 닫는 태그가 없으면 그 문단까지만 잡아서 뒤따르는 본문을 지우지 않는다.
+function infoBlockEnd(text, from, tag) {
+    const token = new RegExp(`<(/?)${tag}${TAG_END}[^>]*>`, 'gi');
+    token.lastIndex = from;
+    let depth = 1;
+    let m;
+    while ((m = token.exec(text)) !== null) {
+        if (m[1]) {
+            if (--depth === 0) return m.index + m[0].length;
+        } else if (!SELF_CLOSED.test(m[0])) {
+            depth++;
+        }
+    }
+    const blank = /\n[ \t]*\n/g;
+    blank.lastIndex = from;
+    const end = blank.exec(text);
+    return end ? end.index : text.length;
+}
+
+function cutInfoBlocks(text, open, tagOf) {
+    let out = '';
+    let last = 0;
+    let m;
+    open.lastIndex = 0;
+    while ((m = open.exec(text)) !== null) {
+        let end = m.index + m[0].length;
+        if (!SELF_CLOSED.test(m[0])) end = infoBlockEnd(text, end, tagOf(m));
+        out += text.slice(last, m.index);
+        last = end;
+        open.lastIndex = end;
+    }
+    return out + text.slice(last);
+}
+
+function stripInfoPanel(text) {
+    const codeHead = '```\\s*' + INFO_TAGS + '(?![\\w-])[^\\n]*\\n';
+    let out = cutInfoBlocks(String(text || ''), new RegExp(`<(${INFO_TAGS})${TAG_END}[^>]*>`, 'gi'), (m) => m[1]);
+    out = out
+        .replace(new RegExp(`</?${INFO_TAGS}${TAG_END}[^>]*>`, 'gi'), '')
+        .replace(new RegExp(codeHead + '[\\s\\S]*?```', 'gi'), '')
+        .replace(new RegExp(codeHead + '[\\s\\S]*?(?=\\n[ \\t]*\\n|$)', 'gi'), '');
+    out = cutInfoBlocks(out, new RegExp(`<div\\b[^>]*class=["'][^"']*${INFO_CLASSES}[^"']*["'][^>]*>`, 'gi'), () => 'div');
+    // 상태창 앞에 두던 구분선이 끝에 홀로 남으면 함께 지운다.
+    return out.replace(/(?:\n\s*[-*_]{3,}\s*)+$/, '').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+const strippedCache = new WeakMap();
+function msgText(m) {
+    const raw = rawText(m);
+    if (!m || S().showInfoPanel) return raw;
+    const hit = strippedCache.get(m);
+    if (hit && hit.raw === raw) return hit.out;
+    const out = stripInfoPanel(raw);
+    strippedCache.set(m, { raw, out });
+    return out;
+}
+
+// 정규식 스크립트가 그려 낸 상태창 카드처럼, 원문에는 없고 그린 뒤에야 생기는 것
+function removeRenderedInfoPanels(root) {
+    const byClass = new RegExp(`(?:^|\\s)${INFO_CLASSES}(?:\\s|$)`, 'i');
+    const byTag = new RegExp(`^${INFO_TAGS}$`, 'i');
+    for (const el of [...root.querySelectorAll('.pbk-msg *')]) {
+        if (!el.isConnected) continue;
+        if (byTag.test(el.localName) || byClass.test(el.getAttribute('class') || '') || byClass.test(el.id || '')) el.remove();
+    }
+}
 const msgKey = (m, i) => (m?.send_date ? String(m.send_date) : `#${i}`);
 
 // 숨김 처리된 대화 메시지는 읽되, 실리태번 안내문 같은 시스템 메시지는 뺀다.
@@ -398,6 +473,7 @@ function renderChapter(i) {
     clearHighlight();
     dom.flow.innerHTML = chapterHtml(ch);
     dom.flow.classList.toggle('pbk-noimg', !S().showImages);
+    if (!S().showInfoPanel) removeRenderedInfoPanels(dom.flow);
     for (const a of dom.flow.querySelectorAll('a[href]')) {
         if (/^https?:/i.test(a.getAttribute('href'))) { a.target = '_blank'; a.rel = 'noopener noreferrer'; }
     }
@@ -920,6 +996,7 @@ const FORM = [
     ['chapterChars', '장 분량', 'range', [2000, 15000, 500, '자']],
     ['includeUser', '사용자 메시지도 넣기', 'check'],
     ['showImages', '그림 보이기', 'check'],
+    ['showInfoPanel', '상태창 보이기', 'check'],
     ['wheel', '휠로 넘기기', 'check'],
 ];
 
@@ -970,7 +1047,8 @@ function onSettingChange(key, raw) {
     setSetting(key, value);
     syncSettingsForm();
     applyStyles();
-    if (key === 'includeUser') {
+    if (key === 'includeUser' || key === 'showInfoPanel') {
+        st.quietUntil = Date.now() + 1000;
         rebuild();
     } else if (key === 'chapterChars') {
         scheduleRebuild();
