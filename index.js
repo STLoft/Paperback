@@ -49,6 +49,7 @@ const DEFAULTS = Object.freeze({
     showImages: true,
     showInfoPanel: true,
     wheel: true,
+    fill: false,
 });
 
 const FLIP_MS = 560;
@@ -380,16 +381,18 @@ function computeGeometry() {
     const narrow = W < NARROW;
     let cols = s.layout === 'double' ? 2 : s.layout === 'single' ? 1 : (W >= 960 && W > H * 1.15 ? 2 : 1);
     if (narrow) cols = 1;
-    const outerX = narrow ? 0 : 24;
-    const outerY = narrow ? 0 : 16;
+    // 화면 맞춤: 책 둘레의 바탕을 없애고 종이를 화면 끝까지 넓힌다. 좁은 화면은 언제나 이렇게 그린다.
+    const full = narrow || s.fill;
+    const outerX = full ? 0 : 24;
+    const outerY = full ? 0 : 16;
     const mx = narrow ? Math.min(s.margin, 28) : s.margin;
     const maxPageW = Math.round(s.fontSize * 34 + mx * 2);
-    const pageW = Math.max(200, Math.floor(Math.min((W - outerX * 2) / cols, narrow ? W : maxPageW)));
+    const pageW = Math.max(200, Math.floor(Math.min((W - outerX * 2) / cols, full ? W : maxPageW)));
     const bookW = pageW * cols;
     const bookH = Math.max(240, Math.floor(H - outerY * 2));
     // 좁은 화면에서는 위아래 막대가 책 위에 떠 있으므로 막대 높이만큼 비워 둔다.
-    const top = Math.max(narrow ? 60 : 40, Math.round(mx * 0.85));
-    const bottom = Math.max(narrow ? 56 : 44, Math.round(mx * 0.95));
+    const top = Math.max(full ? 60 : 40, Math.round(mx * 0.85));
+    const bottom = Math.max(full ? 56 : 44, Math.round(mx * 0.95));
     const cw = pageW - mx * 2;
     const gap = mx * 2;
     return {
@@ -758,6 +761,7 @@ function applyTheme() {
     const t = customTheme(s.theme);
     const r = dom.root.style;
     dom.root.dataset.theme = t ? 'custom' : s.theme;
+    dom.root.classList.toggle('pbk-fill', s.fill);
     for (const v of THEME_VARS) r.removeProperty(`--pbk-${v}`);
     let lightDesk = s.theme === 'white';
     if (t) {
@@ -1169,11 +1173,12 @@ const FORM = [
     ['align', '정렬', 'seg', { justify: '양쪽', left: '왼쪽' }],
     ['indent', '첫 줄 들여쓰기', 'check'],
     ['layout', '펼침', 'seg', { auto: '자동', single: '한 쪽', double: '두 쪽' }],
+    ['fill', '화면 맞춤', 'check'],
     ['effect', '넘기는 모양', 'seg', { flip: '넘기기', slide: '밀기', none: '없음' }],
     ['sound', '넘기는 소리', 'check'],
     ['volume', '소리 크기', 'range', [0, 1, 0.05, '%']],
     ['chapterChars', '장 분량', 'range', [2000, 15000, 500, '자']],
-    ['includeUser', '사용자 메시지도 넣기', 'check'],
+    ['includeUser', '유저 메시지', 'check'],
     ['showImages', '그림 보이기', 'check'],
     ['showInfoPanel', '상태창 보이기', 'check'],
     ['wheel', '휠로 넘기기', 'check'],
@@ -1243,7 +1248,7 @@ function onSettingChange(key, raw) {
         rebuild();
     } else if (key === 'chapterChars') {
         scheduleRebuild();
-    } else if (['font', 'fontSize', 'lineHeight', 'margin', 'align', 'indent', 'layout', 'showImages'].includes(key)) {
+    } else if (['font', 'fontSize', 'lineHeight', 'margin', 'align', 'indent', 'layout', 'fill', 'showImages'].includes(key)) {
         scheduleRelayout();
     } else if (key === 'sound' && value) {
         playFlip();

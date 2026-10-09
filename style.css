@@ -97,7 +97,8 @@ body.pbk-open {
     overflow: hidden;
 }
 
-.pbk-narrow .pbk-stage {
+.pbk-narrow .pbk-stage,
+.pbk-fill .pbk-stage {
     inset: 0;
 }
 
@@ -123,7 +124,8 @@ body.pbk-open {
     overflow: hidden;
 }
 
-.pbk-narrow .pbk-paper {
+.pbk-narrow .pbk-paper,
+.pbk-fill .pbk-paper {
     border-radius: 0;
     box-shadow: none;
 }
@@ -488,7 +490,8 @@ body.pbk-open {
     font-size: 12px;
 }
 
-.pbk-narrow .pbk-bar {
+.pbk-narrow .pbk-bar,
+.pbk-fill .pbk-bar {
     background: var(--pbk-ui);
     backdrop-filter: blur(6px);
 }
@@ -591,11 +594,11 @@ body.pbk-open {
     background: rgba(255, 255, 255, 0.18);
 }
 
-.pbk-root.pbk-lightdesk:not(.pbk-narrow) .pbk-bar {
+.pbk-root.pbk-lightdesk:not(.pbk-narrow):not(.pbk-fill) .pbk-bar {
     color: #2a2d33;
 }
 
-.pbk-root.pbk-lightdesk:not(.pbk-narrow) .pbk-progress::before {
+.pbk-root.pbk-lightdesk:not(.pbk-narrow):not(.pbk-fill) .pbk-progress::before {
     background: rgba(0, 0, 0, 0.15);
 }
 
