@@ -1793,11 +1793,13 @@ async function sendFromBook() {
     // 실리태번이 받아 가면 그쪽 입력창이 빈다. 받지 못했으면(연결 없음 등) 글을 그대로 둔다.
     for (let n = 0; n < 30 && ta.value === sent && sent; n++) await new Promise((r) => setTimeout(r, 100));
     if (!st.open || dom.composeInput.value !== sent) return;
-    if (!sent) return;
+    if (!sent) { closeCompose(); return; }
     if (ta.value === sent) { st.follow = null; return; }
     toast('보냈습니다');
     dom.composeInput.value = ta.value;
     growCompose();
+    // 보냈으면 입력창을 닫아 답이 써지는 쪽을 가리지 않는다. 멈추기는 아래 막대 단추로 한다.
+    closeCompose();
 }
 
 // 버전(스와이프) 고르기: 펼친 쪽에서 버전이 여럿인 마지막 캐릭터 메시지, 또는 채팅의 마지막 메시지
