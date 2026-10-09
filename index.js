@@ -142,6 +142,8 @@ const st = {
     swipePin: null, // 방금 버전을 바꾼 메시지. 쪽을 넘기기 전까지는 계속 이 메시지를 고른다.
     edit: null, // { idx, key }
     relayoutPending: false,
+    scope: 'chat', // 찾기 범위: 'chat'(이 대화방) | 'all'(이 캐릭터의 모든 대화방)
+    switching: false, // 책에서 대화방을 바꾸는 중 (CHAT_CHANGED에 책을 닫지 않는다)
 };
 let dom = null;
 
@@ -1030,10 +1032,11 @@ function clearHighlight() {
     if (window.CSS?.highlights) CSS.highlights.delete('pbk-hit');
 }
 
-function goToText(i, query) {
-    jump(i, 0);
+// root를 주면 이미 펼친 장에서 그 안(메시지 하나)만 찾는다.
+function goToText(i, query, root) {
+    if (!root) jump(i, 0);
     const q = query.toLowerCase();
-    const walker = document.createTreeWalker(dom.flow, NodeFilter.SHOW_TEXT);
+    const walker = document.createTreeWalker(root || dom.flow, NodeFilter.SHOW_TEXT);
     while (walker.nextNode()) {
         const n = walker.currentNode;
         const at = n.data.toLowerCase().indexOf(q);
@@ -1114,8 +1117,153 @@ function closePanel() {
     if (dom) dom.panel.hidden = true;
 }
 
+// ── 대화방 (같은 캐릭터의 다른 채팅) ─────────────────────────────────────
+// 대화방을 고르면 실리태번의 채팅을 실제로 바꾼 뒤 책을 다시 펼친다. 그룹 채팅에서는 쓰지 않는다.
+
+const canSwitchRoom = () => { const c = ctx(); return !c.groupId && c.characterId !== undefined && !!c.characters?.[c.characterId]; };
+const roomChats = new Map(); // 전체 검색에서 받아 둔 대화방 내용 (책을 닫으면 비운다)
+
+async function postJson(url, body) {
+    const res = await fetch(url, { method: 'POST', headers: ctx().getRequestHeaders(), body: JSON.stringify(body) });
+    if (!res.ok) throw new Error(`${url} ${res.status}`);
+    return res.json();
+}
+
+// 이 캐릭터의 대화방 목록. query를 주면 그 말이 들어 있는 방만 돌려준다.
+async function fetchRooms(query = '') {
+    const c = ctx();
+    const list = await postJson('/api/chats/search', { query, avatar_url: c.characters[c.characterId].avatar });
+    const time = (r) => { const t = Date.parse(r.last_mes); return Number.isNaN(t) ? 0 : t; };
+    return (Array.isArray(list) ? list : []).filter((r) => r?.file_name)
+        .sort((a, b) => time(b) - time(a) || String(b.file_name).localeCompare(String(a.file_name)));
+}
+
+function updateRoomRow() {
+    const ok = canSwitchRoom();
+    dom.room.hidden = !ok;
+    dom.scope.hidden = !ok;
+    if (!ok) { st.scope = 'chat'; return; }
+    dom.roomName.textContent = ctx().getCurrentChatId() || '';
+    for (const b of dom.scope.querySelectorAll('[data-scope]')) b.classList.toggle('pbk-on', b.dataset.scope === st.scope);
+    dom.search.placeholder = st.scope === 'all' ? '모든 대화방에서 찾기' : '본문에서 찾기';
+}
+
+async function toggleRooms() {
+    if (!dom.rooms.hidden) { dom.rooms.hidden = true; dom.room.classList.remove('pbk-open'); return; }
+    dom.rooms.hidden = false;
+    dom.room.classList.add('pbk-open');
+    dom.rooms.innerHTML = '<li class="pbk-empty">대화방을 불러오는 중…</li>';
+    try {
+        const cur = ctx().getCurrentChatId();
+        const list = await fetchRooms();
+        dom.rooms.innerHTML = list.map((r) => {
+            const t = Date.parse(r.last_mes);
+            const date = Number.isNaN(t) ? '' : ` · ${new Date(t).toLocaleDateString()}`;
+            return `<li data-room="${esc(r.file_name)}"${r.file_name === cur ? ' class="pbk-cur"' : ''}>`
+                + `<span class="pbk-toc-n">${esc(r.file_name)}</span>`
+                + `<span class="pbk-toc-s"><small>메시지 ${Number(r.message_count) || 0}개${esc(date)}</small> ${esc(plainText(r.preview_message).slice(0, 60))}</span></li>`;
+        }).join('') || '<li class="pbk-empty">대화방이 없습니다</li>';
+    } catch (err) {
+        console.error('[Paperback]', err);
+        dom.rooms.innerHTML = '<li class="pbk-empty">대화방 목록을 불러오지 못했습니다</li>';
+    }
+}
+
+// then: 방을 연 뒤 할 일 (검색 결과로 가기 등)
+async function switchRoom(file, then) {
+    const c = ctx();
+    if (!canSwitchRoom() || st.busy) return;
+    if (file === c.getCurrentChatId()) { then?.(); return; }
+    if (generating()) { toast('응답을 쓰는 중에는 대화방을 바꿀 수 없습니다'); return; }
+    const wide = !st.geo?.narrow;
+    st.busy = true;
+    st.switching = true;
+    roomChats.clear();
+    toast('대화방을 여는 중…');
+    try {
+        await c.openCharacterChat(file);
+    } catch (err) {
+        console.error('[Paperback]', err);
+    } finally {
+        st.switching = false;
+        st.busy = false;
+    }
+    if (ctx().getCurrentChatId() !== file) { closeBook(); toastr.error('대화방을 열지 못했습니다.'); return; }
+    await openBook();
+    if (!st.chapters.length) { closeBook(); return; }
+    if (wide) openPanel('toc');
+    then?.();
+}
+
+// 전체 검색: 서버에서 그 말이 든 방을 추린 뒤, 방마다 내용을 받아 어느 메시지인지 찾는다.
+const ROOM_HITS = 3;
+const ROOM_LIMIT = 30;
+
+async function roomMessages(file) {
+    if (file === ctx().getCurrentChatId()) return ctx().chat;
+    if (!roomChats.has(file)) {
+        const c = ctx();
+        const ch = c.characters[c.characterId];
+        const data = await postJson('/api/chats/get', { ch_name: ch.name, file_name: file, avatar_url: ch.avatar });
+        // 첫 줄은 채팅 정보(메타데이터)이고 그 뒤가 메시지다.
+        roomChats.set(file, Array.isArray(data) ? data.slice(1) : []);
+    }
+    return roomChats.get(file);
+}
+
+let searchGen = 0;
+async function renderRoomSearch(q) {
+    const gen = ++searchGen;
+    dom.toc.innerHTML = '<li class="pbk-empty">찾는 중…</li>';
+    const includeUser = S().includeUser;
+    try {
+        const rooms = (await fetchRooms(q)).slice(0, ROOM_LIMIT);
+        if (gen !== searchGen) return;
+        const items = [];
+        for (const r of rooms) {
+            const msgs = await roomMessages(r.file_name);
+            if (gen !== searchGen) return;
+            const hits = [];
+            msgs.forEach((m, idx) => {
+                if (!m || isNotice(m) || (m.is_user && !includeUser)) return;
+                const plain = plainText(msgText(m));
+                const at = plain.toLowerCase().indexOf(q);
+                if (at >= 0) hits.push({ idx, key: msgKey(m, idx), plain, at });
+            });
+            if (!hits.length) continue;
+            items.push(`<li class="pbk-room-head"><span class="pbk-toc-n">${esc(r.file_name)} <small>${hits.length}곳</small></span></li>`);
+            for (const h of hits.slice(0, ROOM_HITS)) {
+                const s0 = Math.max(0, h.at - 24);
+                items.push(`<li data-room="${esc(r.file_name)}" data-midx="${h.idx}" data-mkey="${esc(h.key)}"><span class="pbk-toc-s">`
+                    + `${s0 > 0 ? '…' : ''}${esc(h.plain.slice(s0, h.at))}<mark>${esc(h.plain.slice(h.at, h.at + q.length))}</mark>${esc(h.plain.slice(h.at + q.length, h.at + q.length + 48))}…</span></li>`);
+            }
+        }
+        dom.toc.innerHTML = items.join('') || '<li class="pbk-empty">찾는 글이 없습니다</li>';
+    } catch (err) {
+        if (gen !== searchGen) return;
+        console.error('[Paperback]', err);
+        dom.toc.innerHTML = '<li class="pbk-empty">찾지 못했습니다</li>';
+    }
+}
+
+function openRoomHit(li) {
+    const q = dom.search.value.trim();
+    const mkey = li.dataset.mkey;
+    const midx = Number(li.dataset.midx);
+    switchRoom(li.dataset.room, () => {
+        const i = chapterOfMessage(mkey, midx);
+        jump(i, { anchor: { mkey, midx, mfrac: 0 } });
+        const sec = dom.flow.querySelector(`.pbk-msg[data-idx="${midx}"]`);
+        if (q && sec) goToText(st.ch, q, sec);
+        if (st.geo.narrow) closePanel();
+    });
+}
+
 function renderToc() {
+    updateRoomRow();
     const q = dom.search.value.trim().toLowerCase();
+    if (q && st.scope === 'all') { renderRoomSearch(q); return; }
+    searchGen++;
     const items = [];
     st.chapters.forEach((ch, i) => {
         const plain = chapterPlain(ch);
@@ -1311,7 +1459,19 @@ function createDom() {
                 <button class="pbk-btn" data-act="panel-close" title="닫기"><i class="fa-solid fa-xmark"></i></button>
             </div>
             <div class="pbk-panel-body" data-body="toc">
-                <input type="search" class="pbk-search" placeholder="본문에서 찾기">
+                <div class="pbk-room" hidden>
+                    <button class="pbk-room-cur" data-act="rooms" title="같은 캐릭터의 다른 대화방">
+                        <i class="fa-solid fa-book"></i><span class="pbk-room-name"></span><i class="fa-solid fa-chevron-down pbk-room-arrow"></i>
+                    </button>
+                    <ol class="pbk-list pbk-rooms" hidden></ol>
+                </div>
+                <div class="pbk-searchrow">
+                    <input type="search" class="pbk-search" placeholder="본문에서 찾기">
+                    <div class="pbk-seg pbk-scope" hidden>
+                        <button data-scope="chat" title="이 대화방에서 찾기">이 방</button>
+                        <button data-scope="all" title="이 캐릭터의 모든 대화방에서 찾기">전체</button>
+                    </div>
+                </div>
                 <ol class="pbk-list pbk-toc"></ol>
             </div>
             <div class="pbk-panel-body" data-body="marks"><ol class="pbk-list pbk-marks"></ol></div>
@@ -1355,6 +1515,10 @@ function createDom() {
         pct: $('.pbk-pct'),
         panel: $('.pbk-panel'),
         search: $('.pbk-search'),
+        room: $('.pbk-room'),
+        roomName: $('.pbk-room-name'),
+        rooms: $('.pbk-rooms'),
+        scope: $('.pbk-scope'),
         toc: $('.pbk-toc'),
         marks: $('.pbk-marks'),
         settings: $('.pbk-settings'),
@@ -1399,6 +1563,7 @@ function bindDom() {
         else if (act === 'msg-del') deleteFromBook(Number(btn.closest('li').dataset.idx));
         else if (act === 'edit-cancel') closeEditor();
         else if (act === 'edit-save') saveEditor();
+        else if (act === 'rooms') toggleRooms();
         else if (act === 'theme-add') addCustomTheme();
         else if (act === 'theme-del') deleteCustomTheme();
         else if (act === 'font-add') addCustomFont();
@@ -1412,6 +1577,12 @@ function bindDom() {
     panel.addEventListener('click', (e) => {
         const tab = e.target.closest('[data-tab-btn]');
         if (tab) { openPanel(tab.dataset.tabBtn); return; }
+        const scope = e.target.closest('[data-scope]');
+        if (scope) { st.scope = scope.dataset.scope; renderToc(); return; }
+        const room = e.target.closest('.pbk-rooms li[data-room]');
+        if (room) { switchRoom(room.dataset.room); return; }
+        const hit = e.target.closest('.pbk-toc li[data-room]');
+        if (hit) { openRoomHit(hit); return; }
         const tocItem = e.target.closest('.pbk-toc li[data-i]');
         if (tocItem) {
             const i = Number(tocItem.dataset.i);
@@ -1535,7 +1706,9 @@ function bindDom() {
     window.visualViewport?.addEventListener('scroll', syncKeyboard);
 }
 
-const searchToc = debounce(() => renderToc(), 200);
+const searchTocNow = debounce(() => renderToc(), 200);
+const searchTocAll = debounce(() => renderToc(), 500); // 전체 검색은 서버를 거치므로 덜 자주
+const searchToc = () => (st.scope === 'all' ? searchTocAll() : searchTocNow());
 
 function onKey(e) {
     if (!st.open) return;
@@ -1606,6 +1779,8 @@ async function openBook() {
     dom.root.classList.remove('pbk-composing');
     st.follow = null;
     st.swipePin = null;
+    dom.rooms.hidden = true;
+    dom.room.classList.remove('pbk-open');
     dom.search.value = '';
     applyStyles();
     updateGenUi();
@@ -1628,6 +1803,7 @@ function closeBook() {
     dom.flow.innerHTML = '';
     st.rendered = null;
     st.follow = null;
+    roomChats.clear();
     closePanel();
     closeMenu();
     closeEditor();
@@ -2032,7 +2208,7 @@ function bindEvents() {
     ].filter(Boolean);
     for (const ev of refreshOn) eventSource.on(ev, () => { if (st.open && sameChat()) scheduleRebuild(); });
     if (E.STREAM_TOKEN_RECEIVED) eventSource.on(E.STREAM_TOKEN_RECEIVED, onStreamToken);
-    eventSource.on(E.CHAT_CHANGED, () => { if (st.open) closeBook(); });
+    eventSource.on(E.CHAT_CHANGED, () => { if (st.open && !st.switching) closeBook(); });
     new MutationObserver(updateGenUi).observe(document.body, { attributes: true, attributeFilter: ['data-generating'] });
     window.addEventListener('keydown', onKey, true);
     document.addEventListener('visibilitychange', () => {

@@ -710,6 +710,107 @@ body.pbk-open {
     font: inherit;
 }
 
+/* ── 대화방 고르기 · 찾기 범위 ── */
+
+.pbk-room {
+    margin: 0 0 8px;
+    border: 1px solid var(--pbk-line);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.pbk-room[hidden],
+.pbk-rooms[hidden],
+.pbk-scope[hidden] {
+    display: none;
+}
+
+.pbk-room-cur {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border: none;
+    background: transparent;
+    color: var(--pbk-ink);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.pbk-room-cur:hover {
+    background: var(--pbk-line);
+}
+
+.pbk-room-cur > i {
+    flex: none;
+    font-size: 12px;
+    color: var(--pbk-muted);
+}
+
+.pbk-room-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    font-weight: 600;
+}
+
+.pbk-room.pbk-open .pbk-room-arrow {
+    transform: rotate(180deg);
+}
+
+.pbk-rooms {
+    max-height: 45vh;
+    overflow-y: auto;
+    border-top: 1px solid var(--pbk-line);
+}
+
+.pbk-rooms .pbk-toc-n {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.pbk-rooms small {
+    color: var(--pbk-muted);
+    font-family: system-ui, sans-serif;
+}
+
+.pbk-searchrow {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0 0 8px;
+}
+
+.pbk-searchrow .pbk-search {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+}
+
+.pbk-scope {
+    flex: none;
+}
+
+.pbk-list li.pbk-room-head {
+    cursor: default;
+    padding-bottom: 2px;
+}
+
+.pbk-list li.pbk-room-head:hover {
+    background: none;
+}
+
+.pbk-list li.pbk-room-head .pbk-toc-n {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
 .pbk-list {
     list-style: none;
     margin: 0;
