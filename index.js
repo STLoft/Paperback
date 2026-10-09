@@ -13,15 +13,12 @@ const SERIF = '"Noto Serif KR","Nanum Myeongjo","AppleMyungjo","Batang",serif';
 const SANS = '"Pretendard","Noto Sans KR","Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif';
 
 const FONTS = {
-    serif: { label: '명조 (시스템)', stack: SERIF },
-    sans: { label: '고딕 (시스템)', stack: SANS },
-    gowunBatang: { label: '고운바탕', family: 'Gowun Batang', google: 'Gowun+Batang:wght@400;700', fallback: SERIF },
-    notoSerif: { label: '본명조', family: 'Noto Serif KR', google: 'Noto+Serif+KR:wght@400;700', fallback: SERIF },
-    nanumMyeongjo: { label: '나눔명조', family: 'Nanum Myeongjo', google: 'Nanum+Myeongjo:wght@400;700', fallback: SERIF },
-    hahmlet: { label: '함렛', family: 'Hahmlet', google: 'Hahmlet:wght@400;700', fallback: SERIF },
+    serif: { label: '명조', stack: SERIF },
+    sans: { label: '고딕', stack: SANS },
     ridiBatang: { label: '리디바탕', family: 'RIDIBatang', face: 'https://cdn.jsdelivr.net/gh/projectnoonnu/noonfonts_twelve@1.0/RIDIBatang.woff', fallback: SERIF },
+    nanumMyeongjo: { label: '나눔명조', family: 'Nanum Myeongjo', google: 'Nanum+Myeongjo:wght@400;700', fallback: SERIF },
+    gowunBatang: { label: '고운바탕', family: 'Gowun Batang', google: 'Gowun+Batang:wght@400;700', fallback: SERIF },
     gowunDodum: { label: '고운돋움', family: 'Gowun Dodum', google: 'Gowun+Dodum', fallback: SANS },
-    notoSans: { label: '본고딕', family: 'Noto Sans KR', google: 'Noto+Sans+KR:wght@400;700', fallback: SANS },
 };
 
 const THEMES = {
@@ -47,6 +44,7 @@ const DEFAULTS = Object.freeze({
     volume: 0.5,
     includeUser: false,
     userStyle: 'note',
+    chapterMode: 'chars',
     chapterChars: 5000,
     showImages: true,
     showInfoPanel: true,
@@ -74,6 +72,7 @@ function S() {
     if (!Array.isArray(s.customThemes)) s.customThemes = [];
     if (!Array.isArray(s.customFonts)) s.customFonts = [];
     if (!FONTS[s.font] && !s.customFonts.some((f) => f.id === s.font)) s.font = DEFAULTS.font;
+    if (!SOUNDS[s.soundKind]) s.soundKind = DEFAULTS.soundKind;
     if (!THEMES[s.theme] && !s.customThemes.some((t) => t.id === s.theme)) s.theme = DEFAULTS.theme;
     return s;
 }
@@ -255,6 +254,7 @@ function buildChapters() {
     const { chat } = ctx();
     const s = S();
     const target = s.chapterChars;
+    const byMessage = s.chapterMode === 'message';
     const breaks = new Set(manualBreaks());
     const out = [];
     let cur = null;
@@ -269,9 +269,10 @@ function buildChapters() {
         const manual = items.some((it) => breaks.has(it.key));
         const scene = charIdx !== undefined && startsWithSceneBreak(chat[charIdx]);
         const prologue = charIdx === 0 && items.length === 1;
-        const fresh = !cur || cur.prologue || prologue || manual
-            || cur.chars >= target
-            || (scene && cur.chars >= target / 2);
+        // 장 나누기가 '캐릭터 메시지'이면 캐릭터 메시지마다 새 장. 끝에 남은 사용자 메시지는 마지막 장에 붙인다.
+        const fresh = !cur || cur.prologue || prologue || manual || (byMessage
+            ? charIdx !== undefined
+            : cur.chars >= target || (scene && cur.chars >= target / 2));
         if (fresh) {
             if (!prologue) num++;
             cur = { key: head.key, idx: head.idx, prologue, num: prologue ? 0 : num, msgs: [], chars: 0, sig: '' };
@@ -657,9 +658,6 @@ function animate(oldC, newC, dir, effect) {
 // 띠 거르개가 지나가는 음높이(band: 처음→가장 클 때→끝), 낮은 소리 자르기(cut), 크기(gain)
 const SOUNDS = {
     paper: { label: '기본', dur: 0.42, peak: [0.16, 0.24], decay: 13, white: 0.5, brown: 3, crackle: 0.0025, band: [900, 2800, 1300], cut: 220, gain: 0.7 },
-    thin: { label: '얇은 종이', dur: 0.28, peak: [0.09, 0.13], decay: 18, white: 0.7, brown: 1.2, crackle: 0.004, band: [1800, 4800, 2600], cut: 600, gain: 0.55 },
-    thick: { label: '두꺼운 종이', dur: 0.55, peak: [0.2, 0.3], decay: 10, white: 0.35, brown: 4.5, crackle: 0.0015, band: [500, 1500, 700], cut: 120, gain: 0.9 },
-    quick: { label: '빠르게', dur: 0.16, peak: [0.04, 0.06], decay: 30, white: 0.6, brown: 2, crackle: 0.002, band: [1400, 3600, 2000], cut: 300, gain: 0.6 },
     soft: { label: '부드럽게', dur: 0.6, peak: [0.25, 0.35], decay: 8, white: 0.3, brown: 2.5, crackle: 0, band: [700, 1800, 1000], cut: 180, gain: 0.45 },
 };
 
@@ -1341,13 +1339,13 @@ const FORM = [
     ['sound', '넘기는 소리', 'check'],
     ['soundKind', '소리 종류', 'select', Object.fromEntries(Object.entries(SOUNDS).map(([k, v]) => [k, v.label]))],
     ['volume', '소리 크기', 'range', [0, 1, 0.05, '%']],
-    ['chapterChars', '장 분량', 'range', [2000, 15000, 500, '자']],
+    ['chapterMode', '장 분량', 'seg', { message: '캐릭터 메시지', chars: '글자수' }],
+    ['chapterChars', '글자수', 'range', [2000, 15000, 500, '자']],
     ['includeUser', '유저 메시지', 'check'],
     ['userStyle', '유저 표시', 'seg', { note: '인용', plain: '본문', talk: '대사' }],
     ['showImages', '그림 보이기', 'check'],
     ['showInfoPanel', '상태창 보이기', 'check'],
     ['wheel', '휠로 넘기기', 'check'],
-    ['exportStyled', 'EPUB 꾸밈 유지', 'check'],
 ];
 
 function buildSettingsForm() {
@@ -1377,8 +1375,9 @@ function buildSettingsForm() {
         }
         return `<div class="pbk-row pbk-row-${type}"><div class="pbk-row-label">${esc(label)}</div><div class="pbk-row-ctl">${ctl}</div></div>${extra}`;
     });
-    rows.push('<div class="pbk-row"><div class="pbk-row-label">내보내기</div><div class="pbk-row-ctl">'
-        + '<button class="pbk-mini" data-act="export-epub">EPUB</button><button class="pbk-mini" data-act="export-txt">텍스트</button></div></div>');
+    rows.push('<div class="pbk-row pbk-row-export"><div class="pbk-row-label">내보내기</div><div class="pbk-row-ctl">'
+        + '<div class="pbk-export-btns"><button class="pbk-mini" data-act="export-epub">EPUB</button><button class="pbk-mini" data-act="export-txt">텍스트</button></div>'
+        + '<label class="pbk-opt"><span class="pbk-switch"><input type="checkbox" data-k="exportStyled"><span></span></span>EPUB 꾸밈 유지</label></div></div>');
     rows.push('<div class="pbk-row"><button class="pbk-reset">기본값으로</button></div>');
     return rows.join('');
 }
@@ -1401,6 +1400,8 @@ function syncSettingsForm() {
         else if (c.dataset.v !== undefined) c.classList.toggle('pbk-on', String(s[k]) === c.dataset.v);
     }
     for (const o of dom.settings.querySelectorAll('[data-out]')) o.textContent = formatOut(o.dataset.out, s[o.dataset.out]);
+    // 글자수 슬라이드는 '글자수'로 나눌 때만 보인다.
+    dom.settings.querySelector('[data-k="chapterChars"]').closest('.pbk-row').hidden = s.chapterMode !== 'chars';
 }
 
 function onSettingChange(key, raw) {
@@ -1411,7 +1412,7 @@ function onSettingChange(key, raw) {
     if (key === 'theme') renderCustom();
     syncSettingsForm();
     applyStyles();
-    if (key === 'includeUser' || key === 'showInfoPanel') {
+    if (key === 'includeUser' || key === 'showInfoPanel' || key === 'chapterMode') {
         st.quietUntil = Date.now() + 1000;
         rebuild();
     } else if (key === 'chapterChars') {
