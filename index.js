@@ -126,6 +126,12 @@ const st = {
     posDirty: false,
     anims: [],
     animGen: 0,
+    follow: null, // 책에서 보낸 뒤 새로 올 메시지의 첫 자리(chat 길이). 그 메시지가 오면 그 쪽으로 간다.
+    quietUntil: 0, // 이 시각까지는 '이야기가 이어졌습니다' 같은 알림을 띄우지 않는다.
+    busy: false,
+    swipePin: null, // 방금 버전을 바꾼 메시지. 쪽을 넘기기 전까지는 계속 이 메시지를 고른다.
+    edit: null, // { idx, key }
+    relayoutPending: false,
 };
 let dom = null;
 
@@ -368,8 +374,12 @@ function pageOfAnchor(anchor) {
     const a = list.find((m) => m.key === anchor.mkey && m.idx === anchor.midx)
         || list.find((m) => m.key === anchor.mkey)
         || list.find((m) => m.idx === anchor.midx);
-    if (!a) return 0;
-    const col = Math.min(a.end, a.start + Math.round((anchor.mfrac || 0) * (a.end - a.start + 1)));
+    if (!a) {
+        // 그 메시지가 없어졌으면(지웠거나 책에 넣지 않는 메시지) 바로 앞 메시지가 끝나는 쪽으로 간다.
+        const prev = list.filter((m) => m.idx <= anchor.midx).pop();
+        return prev ? Math.floor(prev.end / st.geo.cols) : 0;
+    }
+    const col =Math.min(a.end, a.start + Math.round((anchor.mfrac || 0) * (a.end - a.start + 1)));
     return Math.floor(col / st.geo.cols);
 }
 
@@ -428,7 +438,9 @@ const scheduleRelayout = debounce(relayout, 120);
 // ── 넘기기 ──────────────────────────────────────────────────────────────
 
 function go(dir) {
-    if (!st.open || !st.chapters.length) return;
+    if (!st.open || !st.geo || !st.chapters.length) return;
+    st.follow = null;
+    st.swipePin = null;
     finishAnim();
     let i = st.ch;
     let page = st.page + dir;
@@ -447,7 +459,9 @@ function go(dir) {
 }
 
 function jump(i, pos = 0) {
-    if (!st.open) return;
+    if (!st.open || !st.geo) return;
+    st.follow = null;
+    st.swipePin = null;
     finishAnim();
     const effect = S().effect;
     const oldC = effect !== 'none' ? snapshot() : null;
@@ -817,6 +831,8 @@ function updateChrome() {
     dom.markBtn.classList.toggle('pbk-on', marked);
     dom.markBtn.querySelector('i').className = `${marked ? 'fa-solid' : 'fa-regular'} fa-bookmark`;
 
+    updateSwipeUi();
+    if (!dom.menu.hidden) renderMenu();
     if (!dom.panel.hidden && dom.panel.dataset.tab === 'toc') markTocCurrent();
 }
 
@@ -998,7 +1014,19 @@ function createDom() {
             <span class="pbk-pageinfo"></span>
             <div class="pbk-progress" title="눌러서 장 옮기기"><div class="pbk-progress-fill"></div></div>
             <span class="pbk-pct"></span>
+            <div class="pbk-swipe" hidden>
+                <button class="pbk-btn" data-act="swipe-prev" title="앞 버전 ([)"><i class="fa-solid fa-chevron-left"></i></button>
+                <span class="pbk-swipe-n"></span>
+                <button class="pbk-btn" data-act="swipe-next" title="다음 버전 (])"><i class="fa-solid fa-chevron-right"></i></button>
+            </div>
+            <button class="pbk-btn" data-act="msgmenu" title="이 쪽의 메시지 고치기·지우기"><i class="fa-solid fa-ellipsis"></i></button>
+            <button class="pbk-btn pbk-compose-btn" data-act="compose" title="메시지 쓰기 (I)"><i class="fa-solid fa-pen-nib"></i></button>
         </div>
+        <div class="pbk-compose" hidden>
+            <textarea class="pbk-compose-input" rows="1" placeholder="메시지 쓰기…"></textarea>
+            <button class="pbk-btn pbk-send" data-act="send" title="보내기 (Enter)"><i class="fa-solid fa-paper-plane"></i></button>
+        </div>
+        <div class="pbk-menu" hidden><ol class="pbk-list pbk-menu-list"></ol></div>
         <aside class="pbk-panel" hidden>
             <div class="pbk-panel-head">
                 <div class="pbk-tabs">
@@ -1015,6 +1043,17 @@ function createDom() {
             <div class="pbk-panel-body" data-body="marks"><ol class="pbk-list pbk-marks"></ol></div>
             <div class="pbk-panel-body pbk-settings" data-body="settings">${buildSettingsForm()}</div>
         </aside>
+        <div class="pbk-editor" hidden>
+            <div class="pbk-editor-box">
+                <div class="pbk-editor-head"></div>
+                <textarea class="pbk-editor-input" spellcheck="false"></textarea>
+                <div class="pbk-editor-foot">
+                    <span class="pbk-editor-hint">Ctrl+Enter 저장 · Esc 취소</span>
+                    <button data-act="edit-cancel">취소</button>
+                    <button class="pbk-primary" data-act="edit-save">저장</button>
+                </div>
+            </div>
+        </div>
         <div class="pbk-toast"></div>`;
     document.body.appendChild(root);
 
@@ -1046,6 +1085,19 @@ function createDom() {
         marks: $('.pbk-marks'),
         settings: $('.pbk-settings'),
         toast: $('.pbk-toast'),
+        swipe: $('.pbk-swipe'),
+        swipeN: $('.pbk-swipe-n'),
+        swipePrev: $('[data-act="swipe-prev"]'),
+        swipeNext: $('[data-act="swipe-next"]'),
+        composeBtn: $('.pbk-compose-btn'),
+        compose: $('.pbk-compose'),
+        composeInput: $('.pbk-compose-input'),
+        sendBtn: $('.pbk-send'),
+        menu: $('.pbk-menu'),
+        menuList: $('.pbk-menu-list'),
+        editor: $('.pbk-editor'),
+        editorHead: $('.pbk-editor-head'),
+        editorInput: $('.pbk-editor-input'),
     };
     bindDom();
 }
@@ -1055,13 +1107,28 @@ function bindDom() {
 
     root.addEventListener('click', (e) => {
         const btn = e.target.closest('[data-act]');
+        const act = btn?.dataset.act;
+        if (!dom.menu.hidden && act !== 'msgmenu' && !e.target.closest('.pbk-menu')) closeMenu();
         if (!btn) return;
-        const act = btn.dataset.act;
         if (act === 'close') closeBook();
         else if (act === 'toc' || act === 'marks' || act === 'settings') openPanel(act);
         else if (act === 'mark') toggleBookmark();
         else if (act === 'break') toggleBreak();
         else if (act === 'panel-close') closePanel();
+        else if (act === 'swipe-prev') doSwipe(-1);
+        else if (act === 'swipe-next') doSwipe(1);
+        else if (act === 'msgmenu') toggleMenu();
+        else if (act === 'compose') { if (generating()) ctx().stopGeneration(); else toggleCompose(); }
+        else if (act === 'send') sendFromBook();
+        else if (act === 'msg-edit') openEditor(Number(btn.closest('li').dataset.idx));
+        else if (act === 'msg-del') deleteFromBook(Number(btn.closest('li').dataset.idx));
+        else if (act === 'edit-cancel') closeEditor();
+        else if (act === 'edit-save') saveEditor();
+    });
+
+    dom.composeInput.addEventListener('input', () => { growCompose(); mirrorDraft(); });
+    dom.composeInput.addEventListener('blur', () => {
+        if (st.relayoutPending) { st.relayoutPending = false; scheduleRelayout(); }
     });
 
     panel.addEventListener('click', (e) => {
@@ -1126,9 +1193,11 @@ function bindDom() {
     // 누르기: 왼쪽 30%는 앞쪽, 오른쪽 30%는 뒤쪽, 가운데는 위아래 막대 감추기/보이기
     let down = null;
     let swiped = false;
+    let menuWasOpen = false;
     stage.addEventListener('pointerdown', (e) => {
         down = { x: e.clientX, y: e.clientY, type: e.pointerType };
         swiped = false;
+        menuWasOpen = !dom.menu.hidden;
     });
     stage.addEventListener('pointerup', (e) => {
         if (!down) return;
@@ -1143,6 +1212,7 @@ function bindDom() {
     stage.addEventListener('click', (e) => {
         if (swiped) { swiped = false; return; }
         if (!panel.hidden) { closePanel(); return; }
+        if (menuWasOpen) return;
         if (e.target.closest('a, button, summary, details, input, select, textarea, video, audio, label')) return;
         if (String(window.getSelection?.() || '').length) return;
         const r = stage.getBoundingClientRect();
@@ -1172,28 +1242,57 @@ function bindDom() {
         }
     }, { passive: false });
 
-    new ResizeObserver(() => { if (st.open) scheduleRelayout(); }).observe(stage);
+    new ResizeObserver(() => {
+        if (!st.open) return;
+        // 터치 기기에서 글을 쓰는 동안에는 자판이 화면을 줄여도 쪽을 다시 나누지 않는다.
+        if (coarse() && document.activeElement === dom.composeInput) { st.relayoutPending = true; return; }
+        scheduleRelayout();
+    }).observe(stage);
+
+    window.visualViewport?.addEventListener('resize', syncKeyboard);
+    window.visualViewport?.addEventListener('scroll', syncKeyboard);
 }
 
 const searchToc = debounce(() => renderToc(), 200);
 
 function onKey(e) {
     if (!st.open) return;
-    const inField = e.target?.closest?.('.pbk-panel input, .pbk-panel select, .pbk-panel textarea');
-    if (inField) {
-        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closePanel(); dom.root.focus(); }
-        else e.stopPropagation();
-        return;
-    }
+    // 실리태번 확인 창(지우기 등)이 떠 있으면 그 창이 키를 받게 둔다.
+    if (document.querySelector('dialog[open]')) return;
     // 책이 열린 동안에는 실리태번 단축키(스와이프·입력창 포커스 등)가 받지 않게 한다.
     e.stopPropagation();
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
     const k = e.key;
+    const field = e.target?.closest?.('.pbk-root input, .pbk-root select, .pbk-root textarea');
+    if (field) {
+        if (e.isComposing || e.keyCode === 229) return; // 한글 조합 중
+        if (field === dom.composeInput) {
+            if (k === 'Escape') { e.preventDefault(); closeCompose(); }
+            else if (k === 'Enter' && !e.shiftKey && !coarse()) { e.preventDefault(); sendFromBook(); }
+        } else if (field === dom.editorInput) {
+            if (k === 'Escape') { e.preventDefault(); closeEditor(); }
+            else if (k === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveEditor(); }
+        } else if (k === 'Escape') { e.preventDefault(); closePanel(); dom.root.focus(); }
+        return;
+    }
+    if (!dom.editor.hidden) {
+        if (k === 'Escape') { e.preventDefault(); closeEditor(); }
+        return;
+    }
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (k === 'ArrowRight' || k === 'PageDown' || (k === ' ' && !e.shiftKey) || k === 'ArrowDown') { e.preventDefault(); go(1); }
     else if (k === 'ArrowLeft' || k === 'PageUp' || (k === ' ' && e.shiftKey) || k === 'ArrowUp') { e.preventDefault(); go(-1); }
     else if (k === 'Home') { e.preventDefault(); jump(st.ch, 0); }
     else if (k === 'End') { e.preventDefault(); jump(st.ch, 'last'); }
-    else if (k === 'Escape') { e.preventDefault(); if (!dom.panel.hidden) closePanel(); else closeBook(); }
+    else if (k === 'Escape') {
+        e.preventDefault();
+        if (!dom.menu.hidden) closeMenu();
+        else if (!dom.panel.hidden) closePanel();
+        else if (!dom.compose.hidden) closeCompose();
+        else closeBook();
+    }
+    else if (k === 'i' || k === 'I') { e.preventDefault(); if (!generating()) openCompose(); }
+    else if (k === '[') { e.preventDefault(); doSwipe(-1); }
+    else if (k === ']') { e.preventDefault(); doSwipe(1); }
     else if (k === 'b' || k === 'B') { e.preventDefault(); toggleBookmark(); }
     else if (k === 't' || k === 'T') { e.preventDefault(); openPanel('toc'); }
     else if (k === 'n' || k === 'N') { e.preventDefault(); toggleBreak(); }
@@ -1218,8 +1317,15 @@ async function openBook() {
     document.body.classList.add('pbk-open');
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     closePanel();
+    closeMenu();
+    closeEditor();
+    dom.compose.hidden = true;
+    dom.root.classList.remove('pbk-composing');
+    st.follow = null;
+    st.swipePin = null;
     dom.search.value = '';
     applyStyles();
+    updateGenUi();
 
     await nextFrame();
     st.geo = computeGeometry();
@@ -1238,28 +1344,59 @@ function closeBook() {
     dom.root.hidden = true;
     dom.flow.innerHTML = '';
     st.rendered = null;
+    st.follow = null;
     closePanel();
+    closeMenu();
+    closeEditor();
+    dom.compose.hidden = true;
+    dom.root.classList.remove('pbk-composing');
     document.body.classList.remove('pbk-open');
     if (st.posDirty && sameChat()) ctx().saveMetadataDebounced();
     st.posDirty = false;
 }
 
+// 책에서 보낸 뒤 새로 온 메시지의 첫머리. 캐릭터의 답이 오면 따라가기를 끝낸다.
+function followAnchor() {
+    if (st.follow == null) return null;
+    let first = null;
+    let answered = false;
+    for (const ch of st.chapters) {
+        for (const it of ch.msgs) {
+            if (it.idx < st.follow) continue;
+            first ||= it;
+            if (!it.user) answered = true;
+        }
+    }
+    if (answered) st.follow = null;
+    return first ? { mkey: first.key, midx: first.idx, mfrac: 0 } : null;
+}
+
 // anchor를 주면 그 자리로, 아니면 지금 읽던 자리로 돌아온다.
-function rebuild(anchor) {
+// soft: 글이 써지는 동안 자주 부르는 용도. 보고 있는 장이 그대로면 다시 그리지 않는다.
+function rebuild(anchor, { soft = false } = {}) {
     if (!st.open) return;
+    const chapters = buildChapters();
+    if (!chapters.length) { closeBook(); return; }
+    if (soft && st.follow == null && st.rendered && st.rendered.idx === st.ch && chapters[st.ch]?.sig === st.rendered.sig) {
+        st.chapters = chapters;
+        updateChrome();
+        return;
+    }
     finishAnim();
-    const keep = anchor || pageAnchor();
+    let keep = anchor || pageAnchor();
     const wasLast = st.ch === st.chapters.length - 1;
     const before = st.chapters.length;
     const lastSig = st.chapters[before - 1]?.sig;
-    st.chapters = buildChapters();
-    if (!st.chapters.length) { closeBook(); return; }
-    st.geo = computeGeometry();
-    applyGeometry();
-    st.rendered = null;
+    st.chapters = chapters;
+    if (!anchor) keep = followAnchor() || keep;
+    if (!soft) {
+        st.geo = computeGeometry();
+        applyGeometry();
+        st.rendered = null;
+    }
     if (keep) show(chapterOfAnchor(keep), { anchor: keep });
     else show(0, 0);
-    if (wasLast && !anchor) {
+    if (wasLast && !anchor && Date.now() > st.quietUntil) {
         if (st.chapters.length > before) toast('새 장이 시작되었습니다');
         else if (st.chapters[st.chapters.length - 1].sig !== lastSig) toast('이야기가 이어졌습니다');
     }
@@ -1268,6 +1405,297 @@ function rebuild(anchor) {
 }
 
 const scheduleRebuild = debounce(() => rebuild(), 150);
+
+// 글이 써지는 동안(스트리밍)에는 0.4초에 한 번만 반영한다. 책장이 넘어가는 중이면 끝난 뒤로 미룬다.
+let streamTimer = 0;
+function onStreamToken() {
+    if (!st.open || streamTimer) return;
+    streamTimer = setTimeout(function tick() {
+        if (st.anims.length) { streamTimer = setTimeout(tick, 150); return; }
+        streamTimer = 0;
+        if (!st.open || !sameChat()) return;
+        st.quietUntil = Date.now() + 2000;
+        rebuild(undefined, { soft: true });
+    }, 400);
+}
+
+// ── 책 안에서 쓰기 · 버전 고르기 · 고치기 · 지우기 ──────────────────────
+
+const generating = () => document.body.dataset.generating === 'true';
+const coarse = () => window.matchMedia?.('(pointer: coarse)').matches ?? false;
+const mesRendered = (idx) => !!document.querySelector(`#chat .mes[mesid="${idx}"]`);
+const NOT_LOADED = '실리태번 화면에 불러오지 않은 오래된 메시지라 여기서는 할 수 없습니다';
+
+// 지금 펼친 쪽에 걸친 메시지들
+function visibleMsgs() {
+    if (!st.geo) return [];
+    const c0 = st.page * st.geo.cols;
+    const c1 = c0 + st.geo.cols - 1;
+    return (st.msgCols || []).filter((m) => m.start <= c1 && m.end >= c0);
+}
+
+function updateGenUi() {
+    if (!dom) return;
+    const gen = generating();
+    dom.root.classList.toggle('pbk-gen', gen);
+    dom.sendBtn.querySelector('i').className = `fa-solid ${gen ? 'fa-stop' : 'fa-paper-plane'}`;
+    dom.sendBtn.title = gen ? '멈추기' : '보내기 (Enter)';
+    dom.composeBtn.querySelector('i').className = `fa-solid ${gen ? 'fa-stop' : 'fa-pen-nib'}`;
+    dom.composeBtn.title = gen ? '멈추기' : '메시지 쓰기 (I)';
+    if (!gen) setTimeout(() => { if (!generating()) st.follow = null; }, 600);
+}
+
+// 쓰기
+
+const stInput = () => /** @type {HTMLTextAreaElement} */ (document.getElementById('send_textarea'));
+
+function growCompose() {
+    const ta = dom.composeInput;
+    ta.style.height = 'auto';
+    ta.style.height = `${Math.min(ta.scrollHeight, Math.round(window.innerHeight * 0.4))}px`;
+}
+
+// 실리태번 입력창과 같은 글을 쓴다. 책을 닫아도 쓰던 글이 남는다.
+function mirrorDraft() {
+    const ta = stInput();
+    if (!ta || ta.value === dom.composeInput.value) return;
+    ta.value = dom.composeInput.value;
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+// 터치 기기에서 자판이 화면 아래를 가리면 입력창을 그만큼 올린다.
+function syncKeyboard() {
+    if (!dom || !st.open) return;
+    const vv = window.visualViewport;
+    let kb = 0;
+    if (vv && coarse()) kb = Math.round(dom.root.getBoundingClientRect().bottom - (vv.offsetTop + vv.height));
+    if (kb < 60) kb = 0;
+    dom.root.style.setProperty('--pbk-kb', `${kb}px`);
+    dom.root.classList.toggle('pbk-kb', kb > 0);
+}
+
+function openCompose() {
+    if (!st.open) return;
+    closeMenu();
+    closePanel();
+    dom.compose.hidden = false;
+    dom.root.classList.add('pbk-composing');
+    dom.composeInput.value = stInput()?.value || '';
+    growCompose();
+    syncKeyboard();
+    dom.composeInput.focus({ preventScroll: true });
+}
+
+function closeCompose() {
+    if (!dom || dom.compose.hidden) return;
+    dom.compose.hidden = true;
+    dom.root.classList.remove('pbk-composing');
+    dom.root.focus({ preventScroll: true });
+}
+
+function toggleCompose() {
+    if (dom.compose.hidden) openCompose(); else closeCompose();
+}
+
+async function sendFromBook() {
+    if (generating()) { ctx().stopGeneration(); return; }
+    const ta = stInput();
+    const btn = document.getElementById('send_but');
+    if (!ta || !btn || !sameChat()) return;
+    mirrorDraft();
+    const sent = ta.value;
+    st.follow = ctx().chat.length;
+    st.quietUntil = Date.now() + 3000;
+    btn.click();
+    // 실리태번이 받아 가면 그쪽 입력창이 빈다. 받지 못했으면(연결 없음 등) 글을 그대로 둔다.
+    for (let n = 0; n < 30 && ta.value === sent && sent; n++) await new Promise((r) => setTimeout(r, 100));
+    if (!st.open || dom.composeInput.value !== sent) return;
+    if (!sent) return;
+    if (ta.value === sent) { st.follow = null; return; }
+    toast('보냈습니다');
+    dom.composeInput.value = ta.value;
+    growCompose();
+}
+
+// 버전(스와이프) 고르기: 펼친 쪽에서 버전이 여럿인 마지막 캐릭터 메시지, 또는 채팅의 마지막 메시지
+
+function swipeTarget() {
+    const { chat } = ctx();
+    const pick = (idx) => {
+        const m = chat[idx];
+        if (!m || m.is_user) return null;
+        const total = Array.isArray(m.swipes) && m.swipes.length ? m.swipes.length : 1;
+        const last = idx === chat.length - 1;
+        if (total < 2 && !last) return null;
+        const cur = clamp(Number(m.swipe_id) || 0, 0, total - 1);
+        // 채팅의 마지막 메시지에서 마지막 버전 다음은 새 응답 만들기 (인사말 제외)
+        return { idx, total, cur, regen: last && idx > 0 && cur === total - 1 };
+    };
+    const list = visibleMsgs();
+    // 버전을 바꾸면 글 길이가 달라져 다른 메시지가 같은 쪽에 들어올 수 있다. 고르던 메시지를 놓치지 않는다.
+    if (st.swipePin != null && list.some((v) => v.idx === st.swipePin)) {
+        const t = pick(st.swipePin);
+        if (t) return t;
+    }
+    for (let n = list.length - 1; n >= 0; n--) {
+        const t = pick(list[n].idx);
+        if (t) return t;
+    }
+    return null;
+}
+
+function updateSwipeUi() {
+    const t = swipeTarget();
+    dom.swipe.hidden = !t || (t.total < 2 && !t.regen);
+    if (!t) return;
+    dom.swipeN.textContent = `${t.cur + 1}/${t.total}`;
+    dom.swipePrev.disabled = t.total < 2;
+    dom.swipeNext.querySelector('i').className = `fa-solid ${t.regen ? 'fa-rotate' : 'fa-chevron-right'}`;
+    dom.swipeNext.title = t.regen ? '새 응답 만들기 (])' : '다음 버전 (])';
+}
+
+async function doSwipe(dir) {
+    if (!st.open || st.busy) return;
+    const t = swipeTarget();
+    if (!t) return;
+    const c = ctx();
+    if (!c.swipe?.to) { toast('이 실리태번 버전에서는 버전을 바꿀 수 없습니다'); return; }
+    if (generating()) { toast('응답을 쓰는 중에는 바꿀 수 없습니다'); return; }
+    if (c.swipe.state && c.swipe.state() !== 'none') return;
+    const regen = dir > 0 && t.regen;
+    if (!regen && t.total < 2) return;
+    if (!mesRendered(t.idx)) { toast(NOT_LOADED); return; }
+    st.quietUntil = Date.now() + 3000;
+    st.swipePin = t.idx;
+    st.busy = true;
+    try {
+        if (regen) {
+            // 새 응답은 다 써질 때까지 끝나지 않으므로 기다리지 않는다.
+            c.swipe.to(null, 'right', { forceMesId: t.idx }).catch((err) => console.error('[Paperback]', err));
+        } else {
+            await c.swipe.to(null, dir > 0 ? 'right' : 'left', {
+                source: 'swipe_picker',
+                forceMesId: t.idx,
+                forceSwipeId: (t.cur + dir + t.total) % t.total,
+            });
+        }
+    } catch (err) {
+        console.error('[Paperback]', err);
+        toast('버전을 바꾸지 못했습니다');
+    } finally {
+        st.busy = false;
+    }
+}
+
+// 메시지 메뉴 (고치기 · 지우기)
+
+function renderMenu() {
+    const { chat } = ctx();
+    const rows = visibleMsgs().map((v) => {
+        const m = chat[v.idx];
+        if (!m) return '';
+        return `<li data-idx="${v.idx}"><span class="pbk-toc-n">${esc(m.name || '')}</span>`
+            + `<span class="pbk-toc-s">${esc(plainText(msgText(m)).slice(0, 60))}</span>`
+            + '<span class="pbk-menu-acts">'
+            + '<button data-act="msg-edit" title="고치기"><i class="fa-solid fa-pen"></i></button>'
+            + '<button data-act="msg-del" title="지우기"><i class="fa-solid fa-trash-can"></i></button>'
+            + '</span></li>';
+    });
+    dom.menuList.innerHTML = rows.join('') || '<li class="pbk-empty">이 쪽에는 메시지가 없습니다</li>';
+}
+
+function toggleMenu() {
+    if (!dom.menu.hidden) { closeMenu(); return; }
+    finishAnim();
+    closePanel();
+    renderMenu();
+    dom.menu.hidden = false;
+}
+
+function closeMenu() {
+    if (dom) dom.menu.hidden = true;
+}
+
+function openEditor(idx) {
+    const m = ctx().chat[idx];
+    if (!m) return;
+    if (generating()) { toast('응답을 쓰는 중에는 고칠 수 없습니다'); return; }
+    closeMenu();
+    st.edit = { idx, key: msgKey(m, idx) };
+    dom.editorHead.textContent = `${m.name || ''} · 메시지 고치기`;
+    dom.editorInput.value = m.mes || '';
+    dom.editor.hidden = false;
+    syncKeyboard();
+    dom.editorInput.focus({ preventScroll: true });
+    dom.editorInput.setSelectionRange(0, 0);
+    dom.editorInput.scrollTop = 0;
+}
+
+function closeEditor() {
+    if (!dom || dom.editor.hidden) return;
+    dom.editor.hidden = true;
+    st.edit = null;
+    dom.root.focus({ preventScroll: true });
+}
+
+// 실리태번의 메시지 고치기와 같은 순서: 본문·현재 버전 바꾸기 → MESSAGE_EDITED → 화면 갱신 → MESSAGE_UPDATED → 저장
+async function saveEditor() {
+    const e = st.edit;
+    if (!e) return;
+    const c = ctx();
+    const m = c.chat[e.idx];
+    if (!m || msgKey(m, e.idx) !== e.key || !sameChat()) {
+        closeEditor();
+        toast('그사이 메시지가 바뀌어 저장하지 못했습니다');
+        return;
+    }
+    if (generating()) { toast('응답을 쓰는 중에는 고칠 수 없습니다'); return; }
+    let text = dom.editorInput.value;
+    if (c.powerUserSettings?.trim_spaces) text = text.trim();
+    if (!text.trim()) { toast('빈 글로는 저장할 수 없습니다'); return; }
+    closeEditor();
+    if (text === m.mes) return;
+    text = c.substituteParams ? c.substituteParams(text) : text;
+    m.mes = text;
+    if (m.swipe_id !== undefined && Array.isArray(m.swipes)) m.swipes[m.swipe_id] = text;
+    if (m.extra && 'display_text' in m.extra) delete m.extra.display_text;
+    c.chatMetadata.tainted = true;
+    st.quietUntil = Date.now() + 3000;
+    const { eventSource, eventTypes: E } = c;
+    try {
+        await eventSource.emit(E.MESSAGE_EDITED, e.idx);
+        if (mesRendered(e.idx)) c.updateMessageBlock(e.idx, m);
+        await eventSource.emit(E.MESSAGE_UPDATED, e.idx);
+        await c.saveChat();
+        toast('고쳤습니다');
+    } catch (err) {
+        console.error('[Paperback]', err);
+        toast('저장하지 못했습니다');
+    }
+    rebuild();
+}
+
+// 실리태번의 확인 창을 그대로 쓴다. 버전이 여럿이면 '이 버전만'과 '메시지 전체' 가운데 고를 수 있다.
+async function deleteFromBook(idx) {
+    const c = ctx();
+    const m = c.chat[idx];
+    if (!m) return;
+    closeMenu();
+    st.swipePin = null;
+    if (!c.deleteMessage) { toast('이 실리태번 버전에서는 지울 수 없습니다'); return; }
+    if (generating()) { toast('응답을 쓰는 중에는 지울 수 없습니다'); return; }
+    if (!mesRendered(idx)) { toast(NOT_LOADED); return; }
+    const swipeId = !m.is_user && Array.isArray(m.swipes) && m.swipes.length > 1
+        ? clamp(Number(m.swipe_id) || 0, 0, m.swipes.length - 1) : undefined;
+    st.quietUntil = Date.now() + 3000;
+    try {
+        await c.deleteMessage(idx, swipeId, true);
+    } catch (err) {
+        console.error('[Paperback]', err);
+        toast('지우지 못했습니다');
+    }
+    if (st.open) dom.root.focus({ preventScroll: true });
+}
 
 // ── 등록 ────────────────────────────────────────────────────────────────
 
@@ -1318,7 +1746,9 @@ function bindEvents() {
         E.MESSAGE_SWIPED, E.MESSAGE_UPDATED, E.MESSAGE_SWIPE_DELETED, E.GENERATION_ENDED,
     ].filter(Boolean);
     for (const ev of refreshOn) eventSource.on(ev, () => { if (st.open && sameChat()) scheduleRebuild(); });
+    if (E.STREAM_TOKEN_RECEIVED) eventSource.on(E.STREAM_TOKEN_RECEIVED, onStreamToken);
     eventSource.on(E.CHAT_CHANGED, () => { if (st.open) closeBook(); });
+    new MutationObserver(updateGenUi).observe(document.body, { attributes: true, attributeFilter: ['data-generating'] });
     window.addEventListener('keydown', onKey, true);
     document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'hidden' && st.open && st.posDirty && sameChat()) {
