@@ -19,6 +19,7 @@ const FONTS = {
     notoSerif: { label: '본명조', family: 'Noto Serif KR', google: 'Noto+Serif+KR:wght@400;700', fallback: SERIF },
     nanumMyeongjo: { label: '나눔명조', family: 'Nanum Myeongjo', google: 'Nanum+Myeongjo:wght@400;700', fallback: SERIF },
     hahmlet: { label: '함렛', family: 'Hahmlet', google: 'Hahmlet:wght@400;700', fallback: SERIF },
+    ridiBatang: { label: '리디바탕', family: 'RIDIBatang', face: 'https://cdn.jsdelivr.net/gh/projectnoonnu/noonfonts_twelve@1.0/RIDIBatang.woff', fallback: SERIF },
     gowunDodum: { label: '고운돋움', family: 'Gowun Dodum', google: 'Gowun+Dodum', fallback: SANS },
     notoSans: { label: '본고딕', family: 'Noto Sans KR', google: 'Noto+Sans+KR:wght@400;700', fallback: SANS },
 };
@@ -63,10 +64,17 @@ function S() {
     for (const [k, v] of Object.entries(DEFAULTS)) {
         if (s[k] === undefined || typeof s[k] !== typeof v) s[k] = v;
     }
-    if (!FONTS[s.font]) s.font = DEFAULTS.font;
-    if (!THEMES[s.theme]) s.theme = DEFAULTS.theme;
+    // 사용자가 더한 테마·글꼴. '기본값으로'를 눌러도 지우지 않는다.
+    //   customThemes: [{ id, name, desk, paper, ink, muted, accent, quote }]
+    //   customFonts:  [{ id, name(font-family), url(없으면 기기에 설치된 글꼴) }]
+    if (!Array.isArray(s.customThemes)) s.customThemes = [];
+    if (!Array.isArray(s.customFonts)) s.customFonts = [];
+    if (!FONTS[s.font] && !s.customFonts.some((f) => f.id === s.font)) s.font = DEFAULTS.font;
+    if (!THEMES[s.theme] && !s.customThemes.some((t) => t.id === s.theme)) s.theme = DEFAULTS.theme;
     return s;
 }
+
+const newId = () => `u${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`;
 
 function setSetting(key, value) {
     S()[key] = value;
@@ -679,27 +687,198 @@ function playFlip() {
 
 // ── 글꼴 ────────────────────────────────────────────────────────────────
 
+const FONT_FILE = /\.(?:woff2?|ttf|otf)(?:[?#]|$)/i;
+
+// 글꼴 정의: { label, family, fallback } + 불러올 곳(google | css | face) 또는 stack
+function fontDef(key) {
+    if (FONTS[key]) return FONTS[key];
+    const f = S().customFonts.find((x) => x.id === key);
+    if (!f) return null;
+    const def = { label: f.name, family: f.name, fallback: SERIF };
+    if (f.url) def[FONT_FILE.test(f.url) ? 'face' : 'css'] = f.url;
+    return def;
+}
+
 const loadedFonts = new Set();
 function loadFont(key) {
-    const f = FONTS[key];
-    if (!f?.google || loadedFonts.has(key)) return;
+    const f = fontDef(key);
+    if (!f || loadedFonts.has(key) || !(f.google || f.css || f.face)) return;
     loadedFonts.add(key);
+    const ready = () => document.fonts.ready.then(() => { if (st.open) scheduleRelayout(); });
+    const failed = () => { loadedFonts.delete(key); toast(`'${f.label}' 글꼴을 불러오지 못했습니다`); };
+    if (f.face) {
+        // 글꼴 파일 주소: @font-face를 직접 만든다.
+        new FontFace(f.family, `url(${JSON.stringify(f.face)})`).load()
+            .then((face) => { document.fonts.add(face); ready(); }, failed);
+        return;
+    }
     const link = document.createElement('link');
     link.rel = 'stylesheet';
-    link.href = `https://fonts.googleapis.com/css2?family=${f.google}&display=swap`;
-    link.addEventListener('load', () => document.fonts.ready.then(() => { if (st.open) scheduleRelayout(); }));
+    link.href = f.css || `https://fonts.googleapis.com/css2?family=${f.google}&display=swap`;
+    link.addEventListener('load', ready);
+    link.addEventListener('error', failed);
     document.head.appendChild(link);
 }
 
 const fontStack = (key) => {
-    const f = FONTS[key] || FONTS.serif;
-    return f.family ? `"${f.family}",${f.fallback}` : f.stack;
+    const f = fontDef(key) || FONTS.serif;
+    return f.family ? `"${f.family.replace(/["\\]/g, '')}",${f.fallback}` : f.stack;
 };
+
+// ── 사용자 테마 ──────────────────────────────────────────────────────────
+
+const THEME_COLORS = [
+    ['desk', '바탕'],
+    ['paper', '종이'],
+    ['ink', '글자'],
+    ['muted', '흐린 글자'],
+    ['accent', '강조'],
+    ['quote', '대사'],
+];
+const THEME_VARS = ['desk', 'paper', 'ink', 'muted', 'accent', 'quote', 'line', 'ui', 'ui-ink', 'shadow'];
+
+function hex6(v, fallback = '#888888') {
+    const m = String(v || '').trim().match(/^#?([0-9a-f]{3}|[0-9a-f]{6})$/i);
+    if (!m) return fallback;
+    const h = m[1].length === 3 ? m[1].replace(/./g, '$&$&') : m[1];
+    return `#${h.toLowerCase()}`;
+}
+
+function rgbOf(hex) {
+    const n = parseInt(hex6(hex).slice(1), 16);
+    return [n >> 16, (n >> 8) & 255, n & 255];
+}
+
+const brightness = (hex) => { const [r, g, b] = rgbOf(hex); return (r * 299 + g * 587 + b * 114) / 255000; };
+
+const customTheme = (key = S().theme) => S().customThemes.find((t) => t.id === key) || null;
+
+function applyTheme() {
+    const s = S();
+    const t = customTheme(s.theme);
+    const r = dom.root.style;
+    dom.root.dataset.theme = t ? 'custom' : s.theme;
+    for (const v of THEME_VARS) r.removeProperty(`--pbk-${v}`);
+    let lightDesk = s.theme === 'white';
+    if (t) {
+        for (const [k] of THEME_COLORS) r.setProperty(`--pbk-${k}`, hex6(t[k]));
+        // 나머지 색은 고른 색에서 만든다.
+        lightDesk = brightness(t.desk) > 0.55;
+        r.setProperty('--pbk-line', `rgba(${rgbOf(t.ink).join(',')},0.14)`);
+        r.setProperty('--pbk-ui', lightDesk ? 'rgba(40,44,52,0.82)' : 'rgba(20,18,16,0.84)');
+        r.setProperty('--pbk-ui-ink', '#f0ece4');
+        r.setProperty('--pbk-shadow', `rgba(0,0,0,${brightness(t.desk) < 0.12 ? 0.7 : lightDesk ? 0.25 : 0.45})`);
+    }
+    // 바탕이 밝으면 위아래 막대 글자를 어둡게 한다.
+    dom.root.classList.toggle('pbk-lightdesk', lightDesk);
+}
+
+function addCustomTheme() {
+    const s = S();
+    const cs = getComputedStyle(dom.root);
+    const t = { id: newId(), name: `내 테마 ${s.customThemes.length + 1}` };
+    for (const [k] of THEME_COLORS) t[k] = hex6(cs.getPropertyValue(`--pbk-${k}`));
+    s.customThemes.push(t);
+    s.theme = t.id;
+    ctx().saveSettingsDebounced();
+    renderCustom();
+    syncSettingsForm();
+    applyStyles();
+    toast('지금 테마를 바탕으로 새 테마를 만들었습니다');
+}
+
+function deleteCustomTheme() {
+    const s = S();
+    const at = s.customThemes.findIndex((t) => t.id === s.theme);
+    if (at < 0) return;
+    s.customThemes.splice(at, 1);
+    s.theme = DEFAULTS.theme;
+    ctx().saveSettingsDebounced();
+    renderCustom();
+    syncSettingsForm();
+    applyStyles();
+}
+
+function editCustomTheme(key, value) {
+    const t = customTheme();
+    if (!t) return;
+    if (key === 'name') {
+        t.name = String(value).trim().slice(0, 20) || '내 테마';
+        const sw = dom.settings.querySelector(`.pbk-swatch[data-v="${t.id}"]`);
+        if (sw) { sw.title = t.name; sw.querySelector('span').textContent = t.name; }
+    } else {
+        t[key] = hex6(value);
+        const sw = dom.settings.querySelector(`.pbk-swatch[data-v="${t.id}"]`);
+        if (sw) { sw.style.background = t.paper; sw.style.color = t.ink; }
+        applyTheme();
+    }
+    ctx().saveSettingsDebounced();
+}
+
+function addCustomFont() {
+    const s = S();
+    const nameEl = dom.settings.querySelector('[data-new="font-name"]');
+    const urlEl = dom.settings.querySelector('[data-new="font-url"]');
+    const name = nameEl.value.trim().replace(/["\\]/g, '').slice(0, 60);
+    const url = urlEl.value.trim();
+    if (!name) { toast('글꼴 이름을 적어 주세요'); nameEl.focus(); return; }
+    if (url && !/^https?:\/\//i.test(url) && !url.startsWith('/')) { toast('주소는 http(s)로 시작해야 합니다'); urlEl.focus(); return; }
+    const f = { id: newId(), name, url };
+    s.customFonts.push(f);
+    s.font = f.id;
+    nameEl.value = '';
+    urlEl.value = '';
+    ctx().saveSettingsDebounced();
+    renderCustom();
+    syncSettingsForm();
+    applyStyles();
+    scheduleRelayout();
+}
+
+function deleteCustomFont(id) {
+    const s = S();
+    const at = s.customFonts.findIndex((f) => f.id === id);
+    if (at < 0) return;
+    s.customFonts.splice(at, 1);
+    const wasCurrent = s.font === id;
+    if (wasCurrent) s.font = DEFAULTS.font;
+    ctx().saveSettingsDebounced();
+    renderCustom();
+    syncSettingsForm();
+    if (wasCurrent) { applyStyles(); scheduleRelayout(); }
+}
+
+// 설정 창에서 사용자 테마·글꼴에 따라 달라지는 부분을 다시 그린다.
+function renderCustom() {
+    const s = S();
+    const $ = (sel) => dom.settings.querySelector(sel);
+
+    $('.pbk-swatches').innerHTML = Object.entries(THEMES)
+        .map(([k, n]) => `<button class="pbk-swatch" data-theme-key="${k}" data-k="theme" data-v="${k}" title="${n}"><span>${n}</span></button>`)
+        .concat(s.customThemes.map((t) => `<button class="pbk-swatch" data-k="theme" data-v="${esc(t.id)}" title="${esc(t.name)}" style="background:${hex6(t.paper)};color:${hex6(t.ink)}"><span>${esc(t.name)}</span></button>`))
+        .join('') + '<button class="pbk-swatch pbk-swatch-add" data-act="theme-add" title="지금 테마를 바탕으로 사용자 테마 추가"><i class="fa-solid fa-plus"></i></button>';
+
+    const t = customTheme(s.theme);
+    const themeBox = $('[data-custom="theme"]');
+    themeBox.hidden = !t;
+    themeBox.innerHTML = !t ? '' : '<div class="pbk-custom-line">'
+        + `<input type="text" class="pbk-in" data-tk="name" maxlength="20" value="${esc(t.name)}" placeholder="테마 이름">`
+        + '<button class="pbk-mini" data-act="theme-del">지우기</button></div>'
+        + `<div class="pbk-colors">${THEME_COLORS.map(([k, n]) => `<label><input type="color" data-tk="${k}" value="${hex6(t[k])}"><span>${n}</span></label>`).join('')}</div>`;
+
+    $('select[data-k="font"]').innerHTML = Object.entries(FONTS).map(([k, f]) => `<option value="${k}">${esc(f.label)}</option>`)
+        .concat(s.customFonts.map((f) => `<option value="${esc(f.id)}">${esc(f.name)}</option>`)).join('');
+
+    const list = $('.pbk-custom-fonts');
+    list.innerHTML = s.customFonts.map((f) => `<li><span title="${esc(f.url || '기기에 설치된 글꼴')}">${esc(f.name)}</span>`
+        + `<button class="pbk-mini" data-font-del="${esc(f.id)}" title="이 글꼴 빼기"><i class="fa-solid fa-xmark"></i></button></li>`).join('');
+    list.hidden = !s.customFonts.length;
+}
 
 function applyStyles() {
     const s = S();
     loadFont(s.font);
-    dom.root.dataset.theme = s.theme;
+    applyTheme();
     const r = dom.root.style;
     r.setProperty('--pbk-font', fontStack(s.font));
     r.setProperty('--pbk-fs', `${s.fontSize}px`);
@@ -924,7 +1103,7 @@ function openPanel(tab) {
     for (const b of dom.panel.querySelectorAll('[data-body]')) b.hidden = b.dataset.body !== tab;
     if (tab === 'toc') renderToc();
     if (tab === 'marks') renderMarks();
-    if (tab === 'settings') syncSettingsForm();
+    if (tab === 'settings') { renderCustom(); syncSettingsForm(); }
 }
 
 function closePanel() {
@@ -1004,7 +1183,7 @@ function buildSettingsForm() {
     const rows = FORM.map(([key, label, type, opt]) => {
         let ctl = '';
         if (type === 'swatch') {
-            ctl = `<div class="pbk-swatches">${Object.entries(THEMES).map(([k, n]) => `<button class="pbk-swatch" data-theme-key="${k}" data-k="${key}" data-v="${k}" title="${n}"><span>${n}</span></button>`).join('')}</div>`;
+            ctl = '<div class="pbk-swatches"></div>'; // renderCustom()이 채운다.
         } else if (type === 'select') {
             ctl = `<select data-k="${key}">${Object.entries(opt).map(([k, n]) => `<option value="${k}">${esc(n)}</option>`).join('')}</select>`;
         } else if (type === 'range') {
@@ -1014,7 +1193,18 @@ function buildSettingsForm() {
         } else if (type === 'check') {
             ctl = `<label class="pbk-switch"><input type="checkbox" data-k="${key}"><span></span></label>`;
         }
-        return `<div class="pbk-row pbk-row-${type}"><div class="pbk-row-label">${esc(label)}</div><div class="pbk-row-ctl">${ctl}</div></div>`;
+        let extra = '';
+        if (key === 'theme') {
+            extra = '<div class="pbk-custom" data-custom="theme" hidden></div>';
+        } else if (key === 'font') {
+            extra = '<details class="pbk-custom" data-custom="font"><summary>글꼴 추가</summary>'
+                + '<ul class="pbk-custom-fonts" hidden></ul>'
+                + '<div class="pbk-custom-line"><input type="text" class="pbk-in" data-new="font-name" placeholder="글꼴 이름 (font-family)"></div>'
+                + '<div class="pbk-custom-line"><input type="url" class="pbk-in" data-new="font-url" placeholder="주소 (선택): CSS 또는 woff2·woff·ttf">'
+                + '<button class="pbk-mini" data-act="font-add">추가</button></div>'
+                + '<p class="pbk-hint">주소를 비우면 기기에 설치된 글꼴을 이름으로 찾아 씁니다.</p></details>';
+        }
+        return `<div class="pbk-row pbk-row-${type}"><div class="pbk-row-label">${esc(label)}</div><div class="pbk-row-ctl">${ctl}</div></div>${extra}`;
     });
     rows.push('<div class="pbk-row"><button class="pbk-reset">기본값으로</button></div>');
     return rows.join('');
@@ -1045,6 +1235,7 @@ function onSettingChange(key, raw) {
     const value = type === 'number' ? Number(raw) : type === 'boolean' ? !!raw : String(raw);
     if (S()[key] === value) return;
     setSetting(key, value);
+    if (key === 'theme') renderCustom();
     syncSettingsForm();
     applyStyles();
     if (key === 'includeUser' || key === 'showInfoPanel') {
@@ -1177,6 +1368,7 @@ function createDom() {
         editorHead: $('.pbk-editor-head'),
         editorInput: $('.pbk-editor-input'),
     };
+    renderCustom();
     bindDom();
 }
 
@@ -1202,6 +1394,9 @@ function bindDom() {
         else if (act === 'msg-del') deleteFromBook(Number(btn.closest('li').dataset.idx));
         else if (act === 'edit-cancel') closeEditor();
         else if (act === 'edit-save') saveEditor();
+        else if (act === 'theme-add') addCustomTheme();
+        else if (act === 'theme-del') deleteCustomTheme();
+        else if (act === 'font-add') addCustomFont();
     });
 
     dom.composeInput.addEventListener('input', () => { growCompose(); mirrorDraft(); });
@@ -1239,12 +1434,15 @@ function bindDom() {
             }
             return;
         }
+        const fontDel = e.target.closest('[data-font-del]');
+        if (fontDel) { deleteCustomFont(fontDel.dataset.fontDel); return; }
         const opt = e.target.closest('[data-k][data-v]');
         if (opt) { onSettingChange(opt.dataset.k, opt.dataset.v); return; }
         if (e.target.closest('.pbk-reset')) {
             const s = S();
             for (const [k, v] of Object.entries(DEFAULTS)) s[k] = v;
             ctx().saveSettingsDebounced();
+            renderCustom();
             syncSettingsForm();
             applyStyles();
             rebuild();
@@ -1254,6 +1452,7 @@ function bindDom() {
     panel.addEventListener('input', (e) => {
         const c = e.target;
         if (c === dom.search) { searchToc(); return; }
+        if (c.dataset.tk) { editCustomTheme(c.dataset.tk, c.value); return; }
         if (c.matches('input[type=range][data-k]')) onSettingChange(c.dataset.k, c.value);
     });
     panel.addEventListener('change', (e) => {
@@ -1350,6 +1549,7 @@ function onKey(e) {
             if (k === 'Escape') { e.preventDefault(); closeEditor(); }
             else if (k === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveEditor(); }
         } else if (k === 'Escape') { e.preventDefault(); closePanel(); dom.root.focus(); }
+        else if (k === 'Enter' && field.dataset.new) { e.preventDefault(); addCustomFont(); }
         return;
     }
     if (!dom.editor.hidden) {
