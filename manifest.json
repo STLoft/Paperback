@@ -5,8 +5,8 @@
     "optional": [],
     "js": "index.js",
     "css": "style.css",
-    "author": "",
+    "author": "STLoft",
     "version": "0.1.0",
-    "homePage": "",
+    "homePage": "https://github.com/STLoft/ST-Paperback",
     "auto_update": true
 }
