@@ -43,6 +43,7 @@ const DEFAULTS = Object.freeze({
     layout: 'auto',
     effect: 'flip',
     sound: true,
+    soundKind: 'paper',
     volume: 0.5,
     includeUser: false,
     userStyle: 'note',
@@ -651,27 +652,38 @@ function animate(oldC, newC, dir, effect) {
 
 // ── 넘기는 소리 (파일 없이 Web Audio로 합성) ─────────────────────────────
 
+// 소리 종류: 길이(dur)·가장 큰 순간(peak)·잦아드는 빠르기(decay), 흰 잡음·낮은 잡음·바스락 비율,
+// 띠 거르개가 지나가는 음높이(band: 처음→가장 클 때→끝), 낮은 소리 자르기(cut), 크기(gain)
+const SOUNDS = {
+    paper: { label: '기본', dur: 0.42, peak: [0.16, 0.24], decay: 13, white: 0.5, brown: 3, crackle: 0.0025, band: [900, 2800, 1300], cut: 220, gain: 0.7 },
+    thin: { label: '얇은 종이', dur: 0.28, peak: [0.09, 0.13], decay: 18, white: 0.7, brown: 1.2, crackle: 0.004, band: [1800, 4800, 2600], cut: 600, gain: 0.55 },
+    thick: { label: '두꺼운 종이', dur: 0.55, peak: [0.2, 0.3], decay: 10, white: 0.35, brown: 4.5, crackle: 0.0015, band: [500, 1500, 700], cut: 120, gain: 0.9 },
+    quick: { label: '빠르게', dur: 0.16, peak: [0.04, 0.06], decay: 30, white: 0.6, brown: 2, crackle: 0.002, band: [1400, 3600, 2000], cut: 300, gain: 0.6 },
+    soft: { label: '부드럽게', dur: 0.6, peak: [0.25, 0.35], decay: 8, white: 0.3, brown: 2.5, crackle: 0, band: [700, 1800, 1000], cut: 180, gain: 0.45 },
+};
+
 let actx = null;
 function playFlip() {
     const s = S();
     if (!s.sound || s.volume <= 0) return;
+    const k = SOUNDS[s.soundKind] || SOUNDS.paper;
     try {
         actx ||= new (window.AudioContext || window.webkitAudioContext)();
         if (actx.state === 'suspended') actx.resume();
         const sr = actx.sampleRate;
-        const dur = 0.42;
+        const dur = k.dur;
         const n = Math.floor(sr * dur);
         const buf = actx.createBuffer(1, n, sr);
         const d = buf.getChannelData(0);
-        const peak = 0.16 + Math.random() * 0.08;
+        const peak = k.peak[0] + Math.random() * (k.peak[1] - k.peak[0]);
         let brown = 0;
         for (let i = 0; i < n; i++) {
             const t = i / sr;
             const white = Math.random() * 2 - 1;
             brown = (brown + 0.02 * white) / 1.02;
-            const env = t < peak ? Math.pow(t / peak, 1.8) : Math.exp(-(t - peak) * 13);
-            const crackle = Math.random() < 0.0025 ? (Math.random() * 2 - 1) * 2 : 0;
-            d[i] = (white * 0.5 + brown * 3 + crackle) * env;
+            const env = t < peak ? Math.pow(t / peak, 1.8) : Math.exp(-(t - peak) * k.decay);
+            const crackle = Math.random() < k.crackle ? (Math.random() * 2 - 1) * 2 : 0;
+            d[i] = (white * k.white + brown * k.brown + crackle) * env;
         }
         const now = actx.currentTime;
         const src = actx.createBufferSource();
@@ -679,14 +691,14 @@ function playFlip() {
         const bp = actx.createBiquadFilter();
         bp.type = 'bandpass';
         bp.Q.value = 0.7;
-        bp.frequency.setValueAtTime(900, now);
-        bp.frequency.linearRampToValueAtTime(2800, now + peak);
-        bp.frequency.linearRampToValueAtTime(1300, now + dur);
+        bp.frequency.setValueAtTime(k.band[0], now);
+        bp.frequency.linearRampToValueAtTime(k.band[1], now + peak);
+        bp.frequency.linearRampToValueAtTime(k.band[2], now + dur);
         const hp = actx.createBiquadFilter();
         hp.type = 'highpass';
-        hp.frequency.value = 220;
+        hp.frequency.value = k.cut;
         const gain = actx.createGain();
-        gain.gain.value = s.volume * 0.7;
+        gain.gain.value = s.volume * k.gain;
         src.connect(bp).connect(hp).connect(gain).connect(actx.destination);
         src.start(now);
     } catch { /* 소리를 낼 수 없는 환경 */ }
@@ -1326,6 +1338,7 @@ const FORM = [
     ['fill', '화면 맞춤', 'check'],
     ['effect', '넘기는 모양', 'seg', { flip: '넘기기', slide: '밀기', none: '없음' }],
     ['sound', '넘기는 소리', 'check'],
+    ['soundKind', '소리 종류', 'select', Object.fromEntries(Object.entries(SOUNDS).map(([k, v]) => [k, v.label]))],
     ['volume', '소리 크기', 'range', [0, 1, 0.05, '%']],
     ['chapterChars', '장 분량', 'range', [2000, 15000, 500, '자']],
     ['includeUser', '유저 메시지', 'check'],
@@ -1403,7 +1416,7 @@ function onSettingChange(key, raw) {
         scheduleRebuild();
     } else if (['font', 'fontSize', 'lineHeight', 'margin', 'align', 'indent', 'layout', 'fill', 'showImages', 'userStyle'].includes(key)) {
         scheduleRelayout();
-    } else if (key === 'sound' && value) {
+    } else if ((key === 'sound' && value) || key === 'soundKind') {
         playFlip();
     }
 }
