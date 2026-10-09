@@ -2370,9 +2370,37 @@ section.user.note { padding-left: 0.9em; border-left: 2px solid #999; font-size:
 section.user.note p { text-indent: 0; }
 section.user.talk, section.user.talk q { color: #6e4a22; }
 img { max-width: 100%; height: auto; }
+div.cover { margin: 0; padding: 0; text-align: center; }
+div.cover img { max-height: 100vh; }
 figure { margin: 1em 0; text-align: center; }
 div.name { font-size: 0.8em; letter-spacing: 0.15em; margin-bottom: 0.3em; color: #9c4a32; }
 `;
+
+// 표지: 캐릭터 프로필 그림. 캐릭터 카드 PNG에는 캐릭터 설정이 함께 들어 있으므로
+// 파일을 그대로 넣지 않고 그림만 JPEG로 다시 그려 넣는다. 그룹 채팅이나 그림이 없을 때는 표지 없이 만든다.
+async function coverImage() {
+    try {
+        const c = ctx();
+        const avatar = !c.groupId && c.characters?.[c.characterId]?.avatar;
+        if (!avatar || avatar === 'none') return null;
+        const res = await fetch(`/characters/${encodeURIComponent(avatar)}`);
+        if (!res.ok) return null;
+        const bmp = await createImageBitmap(await res.blob());
+        const scale = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(bmp.width * scale));
+        canvas.height = Math.max(1, Math.round(bmp.height * scale));
+        const g = canvas.getContext('2d');
+        g.fillStyle = '#fff';
+        g.fillRect(0, 0, canvas.width, canvas.height);
+        g.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+        const blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', 0.9));
+        return blob ? new Uint8Array(await blob.arrayBuffer()) : null;
+    } catch (err) {
+        console.warn('[Paperback] 표지를 만들지 못했습니다', err);
+        return null;
+    }
+}
 
 function saveBlob(blob, name) {
     const a = document.createElement('a');
@@ -2399,6 +2427,7 @@ async function exportBook(kind) {
             saveBlob(new Blob([`﻿${title}\n\n\n${body}\n`], { type: 'text/plain;charset=utf-8' }), exportFileName('txt'));
         } else {
             const id = crypto.randomUUID ? crypto.randomUUID() : newId();
+            const cover = await coverImage();
             const file = (n) => `ch${String(n + 1).padStart(4, '0')}.xhtml`;
             const page = (heading, inner) => '<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html>\n'
                 + '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="ko" lang="ko">\n'
@@ -2411,13 +2440,15 @@ async function exportBook(kind) {
                 { name: 'OEBPS/content.opf', data: '<?xml version="1.0" encoding="utf-8"?>\n'
                     + '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid" xml:lang="ko">\n'
                     + '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
-                    + `<dc:identifier id="bookid">urn:uuid:${id}</dc:identifier><dc:title>${esc(xmlSafe(title))}</dc:title><dc:language>ko</dc:language>`
+                    + `<dc:identifier id="bookid">urn:uuid:${id}</dc:identifier><dc:title>${esc(xmlSafe(title))}</dc:title><dc:language>ko</dc:language>${cover ? '<meta name="cover" content="cover-img"/>' : ''}`
                     + `<meta property="dcterms:modified">${new Date().toISOString().replace(/\.\d+Z$/, 'Z')}</meta></metadata>\n`
-                    + '<manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>'
+                    + '<manifest>'
+                    + (cover ? '<item id="cover-img" href="cover.jpg" media-type="image/jpeg" properties="cover-image"/><item id="cover" href="cover.xhtml" media-type="application/xhtml+xml"/>' : '')
+                    + '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>'
                     + '<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/><item id="css" href="style.css" media-type="text/css"/>'
                     + chapters.map((c, n) => `<item id="c${n}" href="${file(n)}" media-type="application/xhtml+xml"/>`).join('')
                     + images.map((im, n) => `<item id="i${n}" href="${im.name}" media-type="${im.type}"/>`).join('')
-                    + `</manifest>\n<spine toc="ncx">${chapters.map((c, n) => `<itemref idref="c${n}"/>`).join('')}</spine>\n</package>\n` },
+                    + `</manifest>\n<spine toc="ncx">${cover ? '<itemref idref="cover"/>' : ''}${chapters.map((c, n) => `<itemref idref="c${n}"/>`).join('')}</spine>\n</package>\n` },
                 { name: 'OEBPS/nav.xhtml', data: page(title, `<nav epub:type="toc"><h1>${esc(xmlSafe(title))}</h1><ol>`
                     + `${chapters.map((c, n) => `<li><a href="${file(n)}">${esc(c.label)}</a></li>`).join('')}</ol></nav>`) },
                 { name: 'OEBPS/toc.ncx', data: '<?xml version="1.0" encoding="utf-8"?>\n<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">'
@@ -2426,6 +2457,10 @@ async function exportBook(kind) {
                     + '</navMap></ncx>\n' },
                 { name: 'OEBPS/style.css', data: css ? `${EPUB_CSS}\n/* 메시지에 들어 있던 꾸밈 */\n${css}\n` : EPUB_CSS },
                 ...images.map((im) => ({ name: `OEBPS/${im.name}`, data: im.data })),
+                ...(cover ? [
+                    { name: 'OEBPS/cover.jpg', data: cover },
+                    { name: 'OEBPS/cover.xhtml', data: page('표지', '<div class="cover"><img src="cover.jpg" alt="표지"/></div>') },
+                ] : []),
                 ...chapters.map((c, n) => ({ name: `OEBPS/${file(n)}`, data: page(c.label, `<h2 class="ch">${esc(c.label)}</h2>\n${c.xhtml}`) })),
             ];
             saveBlob(zipStore(files, 'application/epub+zip'), exportFileName('epub'));
