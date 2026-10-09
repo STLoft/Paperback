@@ -2380,8 +2380,8 @@ h2.ch { text-align: center; font-size: 1em; font-weight: normal; letter-spacing:
 p { margin: 0 0 0.55em; text-indent: 1em; }
 q { quotes: none; }
 q:before, q:after { content: none; }
-hr { border: none; text-align: center; margin: 1.5em 0; }
-hr:after { content: "＊　＊　＊"; font-size: 0.8em; }
+hr { border: none; background: none; height: auto; text-align: center; margin: 1.5em 0; line-height: 1; }
+hr:after { content: "◆"; font-size: 0.5em; color: #9c4a32; }
 blockquote { margin: 0.8em 0 0.8em 1em; }
 pre, code { white-space: pre-wrap; font-size: 0.85em; }
 section.body { margin-top: 1.2em; }
@@ -2390,6 +2390,8 @@ section.user.note { padding-left: 0.9em; border-left: 2px solid #999; font-size:
 section.user.note p { text-indent: 0; }
 section.user.talk, section.user.talk q { color: #6e4a22; }
 img { max-width: 100%; height: auto; }
+/* 꾸밈 유지: 넘침 숨기기·안쪽 스크롤로 짠 패널이 쪽 경계에서 잘리지 않고 다음 쪽으로 이어지게 한다 */
+.mes_text * { overflow: visible !important; max-height: none !important; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
 div.cover { margin: 0; padding: 0; text-align: center; }
 div.cover img { max-height: 100vh; }
 figure { margin: 1em 0; text-align: center; }
