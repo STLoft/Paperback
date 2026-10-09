@@ -256,6 +256,8 @@ function buildChapters() {
     const target = s.chapterChars;
     const byMessage = s.chapterMode === 'message';
     const breaks = new Set(manualBreaks());
+    const joins = new Set(manualJoins());
+    const titles = chapterTitles();
     const out = [];
     let cur = null;
     let pending = [];
@@ -270,12 +272,14 @@ function buildChapters() {
         const scene = charIdx !== undefined && startsWithSceneBreak(chat[charIdx]);
         const prologue = charIdx === 0 && items.length === 1;
         // 장 나누기가 '캐릭터 메시지'이면 캐릭터 메시지마다 새 장. 끝에 남은 사용자 메시지는 마지막 장에 붙인다.
-        const fresh = !cur || cur.prologue || prologue || manual || (byMessage
+        // 직접 나눈 자리(breaks)는 언제나 새 장, 직접 합친 자리(joins)는 자동 규칙이 나누려 해도 앞 장에 잇는다.
+        const joined = items.some((it) => joins.has(it.key));
+        const fresh = !cur || cur.prologue || prologue || manual || (!joined && (byMessage
             ? charIdx !== undefined
-            : cur.chars >= target || (scene && cur.chars >= target / 2));
+            : cur.chars >= target || (scene && cur.chars >= target / 2)));
         if (fresh) {
             if (!prologue) num++;
-            cur = { key: head.key, idx: head.idx, prologue, num: prologue ? 0 : num, msgs: [], chars: 0, sig: '' };
+            cur = { key: head.key, idx: head.idx, prologue, num: prologue ? 0 : num, title: String(titles[head.key] || ''), msgs: [], chars: 0, sig: '' };
             out.push(cur);
         }
         for (const it of items) {
@@ -301,6 +305,12 @@ function buildChapters() {
 function chapterLabel(ch) {
     if (!ch) return '';
     return ch.prologue ? '프롤로그' : `제 ${ch.num} 장`;
+}
+
+// 번호에 직접 붙인 제목을 이어 쓴 이름 (제목이 없으면 번호만)
+function chapterName(ch) {
+    if (!ch) return '';
+    return ch.title ? `${chapterLabel(ch)} · ${ch.title}` : chapterLabel(ch);
 }
 
 function chapterPlain(ch) {
@@ -360,6 +370,7 @@ function chapterHtml(ch) {
     const { chat, groupId } = ctx();
     let h = '<header class="pbk-ch-head">'
         + `<div class="pbk-ch-num">${esc(chapterLabel(ch))}</div>`
+        + (ch.title ? `<div class="pbk-ch-title">${esc(ch.title)}</div>` : '')
         + '<div class="pbk-ch-orn" aria-hidden="true"></div>'
         + '</header>';
     for (const it of ch.msgs) {
@@ -511,6 +522,11 @@ function renderChapter(i) {
     dom.flow.classList.toggle('pbk-noimg', !S().showImages);
     dom.flow.dataset.user = S().userStyle;
     if (!S().showInfoPanel) removeRenderedInfoPanels(dom.flow);
+    // 실리태번은 메시지 속 <style>(정규식 스크립트가 넣은 것 포함)을 채팅 화면('.mes_text') 안에서만 먹게 바꿔 둔다.
+    // 책의 메시지('.pbk-msg')에 먹도록 그 앞머리만 바꾼다.
+    for (const tag of dom.flow.querySelectorAll('.pbk-msg style')) {
+        tag.textContent = tag.textContent.replace(/[.]mes_text(?![-_a-zA-Z0-9])/g, '.pbk-msg');
+    }
     unlockTallBlocks();
     for (const a of dom.flow.querySelectorAll('a[href]')) {
         if (/^https?:/i.test(a.getAttribute('href'))) { a.target = '_blank'; a.rel = 'noopener noreferrer'; }
@@ -959,32 +975,86 @@ function manualBreaks() {
     return Array.isArray(list) ? list : [];
 }
 
-function saveBreaks(list) {
-    if (!sameChat()) return;
-    meta().breaks = list;
-    ctx().saveMetadataDebounced();
+// 직접 합친 자리: 이 키의 메시지에서는 자동 규칙이 장을 나누려 해도 앞 장에 잇는다.
+function manualJoins() {
+    const list = meta().joins;
+    return Array.isArray(list) ? list : [];
 }
+
+// 장 제목: { 장의 첫 메시지 키: 제목 }
+function chapterTitles() {
+    const map = meta().titles;
+    return map && typeof map === 'object' && !Array.isArray(map) ? map : {};
+}
+
+// 장의 맨 앞 묶음(앞선 사용자 메시지들 + 첫 캐릭터 메시지)의 키
+function headKeys(ch) {
+    const keys = [];
+    for (const it of ch.msgs) {
+        keys.push(it.key);
+        if (!it.user) break;
+    }
+    return keys;
+}
+
+// i번째 장을 앞 장에 잇는다. 자동으로 나뉜 자리도 합칠 수 있다.
+function mergeChapter(i) {
+    const ch = st.chapters[i];
+    const prev = st.chapters[i - 1];
+    if (!ch || !sameChat()) return;
+    if (!prev || ch.prologue) { toast('앞에 합칠 장이 없습니다'); return; }
+    if (prev.prologue) { toast('프롤로그와는 합칠 수 없습니다'); return; }
+    finishAnim();
+    const head = headKeys(ch);
+    const m = meta();
+    m.breaks = manualBreaks().filter((k) => !head.includes(k));
+    m.joins = [...new Set([...manualJoins(), ch.key])];
+    ctx().saveMetadataDebounced();
+    st.quietUntil = Date.now() + 1000;
+    toast(`${chapterLabel(prev)}에 합쳤습니다`);
+    rebuild({ mkey: ch.key, midx: ch.idx, mfrac: 0 });
+}
+
+// 지금 쪽 맨 위의 메시지부터 새 장을 연다.
+function splitChapterHere() {
+    const a = pageAnchor();
+    if (!a || !sameChat()) return;
+    finishAnim();
+    const m = meta();
+    m.joins = manualJoins().filter((k) => k !== a.mkey);
+    m.breaks = [...new Set([...manualBreaks(), a.mkey])];
+    ctx().saveMetadataDebounced();
+    st.quietUntil = Date.now() + 1000;
+    toast('이 메시지부터 새 장을 엽니다');
+    rebuild({ ...a, mfrac: 0 });
+}
+
+// ✂ 단추: 장의 첫 쪽에서는 앞 장과 합치고, 그 밖에서는 지금 쪽부터 새 장을 연다.
+const atChapterStart = (ch, a) => !!ch && !!a && headKeys(ch).includes(a.mkey) && st.page === 0;
 
 function toggleBreak() {
     if (!st.open) return;
-    finishAnim();
     const a = pageAnchor();
     const ch = st.chapters[st.ch];
     if (!a || !ch) return;
-    const list = manualBreaks().slice();
-    const at = list.indexOf(a.mkey);
-    if (at >= 0) {
-        list.splice(at, 1);
-        toast('장 나눔을 없앴습니다');
-    } else if (ch.msgs[0]?.key === a.mkey) {
-        toast('이미 이 메시지에서 장이 시작됩니다');
-        return;
-    } else {
-        list.push(a.mkey);
-        toast('이 메시지부터 새 장을 엽니다');
-    }
-    saveBreaks(list);
-    rebuild({ ...a, mfrac: at >= 0 ? a.mfrac : 0 });
+    if (atChapterStart(ch, a)) mergeChapter(st.ch);
+    else splitChapterHere();
+}
+
+async function renameChapter(i) {
+    const ch = st.chapters[i];
+    if (!ch || !sameChat()) return;
+    const c = ctx();
+    const input = await c.callGenericPopup(`${chapterLabel(ch)}의 제목 (비우면 번호만 보입니다)`, c.POPUP_TYPE.INPUT, ch.title || '');
+    if (input === null || input === false || input === undefined || !st.open || !sameChat()) return;
+    const title = String(input).trim().slice(0, 60);
+    const titles = { ...chapterTitles() };
+    if (title) titles[ch.key] = title; else delete titles[ch.key];
+    meta().titles = titles;
+    c.saveMetadataDebounced();
+    st.quietUntil = Date.now() + 1000;
+    rebuild();
+    dom.root.focus({ preventScroll: true });
 }
 
 function bookmarks() {
@@ -1093,16 +1163,17 @@ function updateChrome() {
     const ch = st.chapters[st.ch];
     if (!ch) return;
     const label = chapterLabel(ch);
+    const name = chapterName(ch);
     const title = bookTitle();
     const g = st.geo;
     dom.title.textContent = title;
-    dom.chap.textContent = label;
+    dom.chap.textContent = name;
 
     if (g.cols === 2) {
         dom.headL.textContent = title;
-        dom.headR.textContent = label;
+        dom.headR.textContent = name;
     } else {
-        dom.headL.textContent = label;
+        dom.headL.textContent = name;
         dom.headR.textContent = '';
     }
     const first = st.page * g.cols + 1;
@@ -1117,9 +1188,9 @@ function updateChrome() {
     dom.pct.textContent = `${Math.floor(pct)}%`;
 
     const anchor = pageAnchor();
-    const manualStart = !!anchor && ch.msgs[0]?.key === anchor.mkey && manualBreaks().includes(anchor.mkey);
-    dom.breakBtn.classList.toggle('pbk-on', manualStart);
-    dom.breakBtn.title = manualStart ? '직접 나눈 장 합치기 (N)' : '이 쪽의 메시지부터 새 장 (N)';
+    const canMerge = atChapterStart(ch, anchor);
+    dom.breakBtn.querySelector('i').className = `fa-solid ${canMerge ? 'fa-link' : 'fa-scissors'}`;
+    dom.breakBtn.title = canMerge ? '앞 장과 합치기 (N)' : '이 쪽의 메시지부터 새 장 (N)';
 
     const marked = currentBookmark() >= 0;
     dom.ribbon.hidden = !marked;
@@ -1310,7 +1381,11 @@ function renderToc() {
             snip = esc(plain.slice(0, 80)) + (plain.length > 80 ? '…' : '');
         }
         const info = `메시지 ${ch.msgs.length}개 · ${ch.chars.toLocaleString()}자`;
-        items.push(`<li data-i="${i}"><span class="pbk-toc-n">${esc(chapterLabel(ch))} <small>${info}</small></span><span class="pbk-toc-s">${snip}</span></li>`);
+        items.push(`<li data-i="${i}"><span class="pbk-toc-n">${esc(chapterLabel(ch))}${ch.title ? ` <b class="pbk-toc-title">${esc(ch.title)}</b>` : ''} <small>${info}</small></span>`
+            + `<span class="pbk-toc-s">${snip}</span><span class="pbk-toc-acts">`
+            + '<button data-ch-act="title" title="장 제목 붙이기"><i class="fa-solid fa-pen"></i></button>'
+            + (i > 0 && !ch.prologue && !st.chapters[i - 1].prologue ? '<button data-ch-act="merge" title="앞 장과 합치기"><i class="fa-solid fa-link"></i></button>' : '')
+            + '</span></li>');
     });
     dom.toc.innerHTML = items.join('') || '<li class="pbk-empty">찾는 글이 없습니다</li>';
     markTocCurrent(true);
@@ -1338,14 +1413,16 @@ function renderMarks() {
     }
     dom.marks.innerHTML = list.map(({ b, n, i }) => {
         const date = new Date(b.at || 0).toLocaleDateString();
-        return `<li data-n="${n}"><span class="pbk-toc-n">${esc(chapterLabel(st.chapters[i]))} <small>${esc(date)}</small></span>`
+        return `<li data-n="${n}"><span class="pbk-toc-n">${esc(chapterName(st.chapters[i]))} <small>${esc(date)}</small></span>`
             + `<span class="pbk-toc-s">${esc(b.text || '')}</span>`
             + '<button class="pbk-del" title="책갈피 빼기"><i class="fa-solid fa-xmark"></i></button></li>';
     }).join('');
 }
 
 // 설정 양식: [키, 이름, 종류, 선택지/범위]
+// '#'로 시작하는 줄은 묶음 제목
 const FORM = [
+    ['#', '모양'],
     ['theme', '테마', 'swatch'],
     ['font', '글꼴', 'select', Object.fromEntries(Object.entries(FONTS).map(([k, f]) => [k, f.label]))],
     ['fontSize', '글자 크기', 'range', [13, 30, 1, 'px']],
@@ -1355,21 +1432,24 @@ const FORM = [
     ['indent', '첫 줄 들여쓰기', 'check'],
     ['layout', '펼침', 'seg', { auto: '자동', single: '한 쪽', double: '두 쪽' }],
     ['fill', '화면 맞춤', 'check'],
+    ['#', '넘기기'],
     ['effect', '넘기는 모양', 'seg', { flip: '넘기기', slide: '밀기', none: '없음' }],
     ['sound', '넘기는 소리', 'check'],
     ['soundKind', '소리 종류', 'select', Object.fromEntries(Object.entries(SOUNDS).map(([k, v]) => [k, v.label]))],
     ['volume', '소리 크기', 'range', [0, 1, 0.05, '%']],
+    ['wheel', '휠로 넘기기', 'check'],
+    ['#', '내용'],
     ['chapterMode', '장 분량', 'seg', { message: '캐릭터 메시지', chars: '글자수' }],
     ['chapterChars', '글자수', 'range', [2000, 15000, 500, '자']],
     ['includeUser', '유저 메시지', 'check'],
     ['userStyle', '유저 표시', 'seg', { note: '인용', plain: '본문', talk: '대사' }],
     ['showImages', '그림 보이기', 'check'],
     ['showInfoPanel', '상태창 보이기', 'check'],
-    ['wheel', '휠로 넘기기', 'check'],
 ];
 
 function buildSettingsForm() {
     const rows = FORM.map(([key, label, type, opt]) => {
+        if (key === '#') return `<div class="pbk-group">${esc(label)}</div>`;
         let ctl = '';
         if (type === 'swatch') {
             ctl = '<div class="pbk-swatches"></div>'; // renderCustom()이 채운다.
@@ -1395,7 +1475,8 @@ function buildSettingsForm() {
         }
         return `<div class="pbk-row pbk-row-${type}"><div class="pbk-row-label">${esc(label)}</div><div class="pbk-row-ctl">${ctl}</div></div>${extra}`;
     });
-    rows.push('<div class="pbk-row pbk-row-export"><div class="pbk-row-label">내보내기</div><div class="pbk-row-ctl">'
+    rows.push('<div class="pbk-group">내보내기</div>');
+    rows.push('<div class="pbk-row pbk-row-export"><div class="pbk-row-label">파일로 저장</div><div class="pbk-row-ctl">'
         + '<div class="pbk-export-btns"><button class="pbk-mini" data-act="export-epub">EPUB</button><button class="pbk-mini" data-act="export-txt">텍스트</button></div>'
         + '<label class="pbk-opt"><span class="pbk-switch"><input type="checkbox" data-k="exportStyled"><span></span></span>EPUB 꾸밈 유지</label></div></div>');
     rows.push('<div class="pbk-row"><button class="pbk-reset">기본값으로</button></div>');
@@ -1626,6 +1707,12 @@ function bindDom() {
         if (room) { switchRoom(room.dataset.room); return; }
         const hit = e.target.closest('.pbk-toc li[data-room]');
         if (hit) { openRoomHit(hit); return; }
+        const chAct = e.target.closest('.pbk-toc [data-ch-act]');
+        if (chAct) {
+            const i = Number(chAct.closest('li').dataset.i);
+            if (chAct.dataset.chAct === 'title') renameChapter(i); else mergeChapter(i);
+            return;
+        }
         const tocItem = e.target.closest('.pbk-toc li[data-i]');
         if (tocItem) {
             const i = Number(tocItem.dataset.i);
@@ -1832,8 +1919,14 @@ async function openBook() {
     st.geo = computeGeometry();
     applyGeometry();
     const pos = loadPos();
-    if (pos) show(chapterOfAnchor(pos), { anchor: pos });
-    else show(0, 0);
+    if (pos) {
+        show(chapterOfAnchor(pos), { anchor: pos });
+    } else {
+        // 처음 여는 대화방은 가장 마지막 메시지가 시작되는 쪽에서 편다.
+        const last = st.chapters.length - 1;
+        const it = st.chapters[last].msgs[st.chapters[last].msgs.length - 1];
+        show(last, it ? { anchor: { mkey: it.key, midx: it.idx, mfrac: 0 } } : 0);
+    }
     dom.root.focus({ preventScroll: true });
 }
 
@@ -2305,6 +2398,8 @@ async function exportChapters(withImages, styled) {
         if (withImages) await embedImages(box, images);
         out.push({
             label: chapterLabel(ch),
+            title: ch.title || '',
+            name: chapterName(ch),
             xhtml: xmlSafe([...box.childNodes].map((c) => ser.serializeToString(c)).join('\n')),
             text: tidyText([...box.children].map((c) => nodeText(c)).join('\n\n')),
         });
@@ -2377,6 +2472,7 @@ function zipStore(files, type) {
 
 const EPUB_CSS = `body { margin: 0; padding: 0 1em; line-height: 1.8; }
 h2.ch { text-align: center; font-size: 1em; font-weight: normal; letter-spacing: 0.3em; margin: 3em 0 2.5em; }
+h2.ch + p.cht { text-align: center; text-indent: 0; font-size: 1.25em; font-weight: bold; margin: -1.6em 0 2.5em; }
 p { margin: 0 0 0.55em; text-indent: 1em; }
 q { quotes: none; }
 q:before, q:after { content: none; }
@@ -2445,7 +2541,7 @@ async function exportBook(kind) {
         const title = bookTitle() || 'Paperback';
         const { chapters, images, missed, css } = await exportChapters(kind === 'epub' && S().showImages, kind === 'epub' && S().exportStyled);
         if (kind === 'txt') {
-            const body = chapters.map((c) => `${c.label}\n\n${c.text}`).join('\n\n\n');
+            const body = chapters.map((c) => `${c.name}\n\n${c.text}`).join('\n\n\n');
             saveBlob(new Blob([`﻿${title}\n\n\n${body}\n`], { type: 'text/plain;charset=utf-8' }), exportFileName('txt'));
         } else {
             const id = crypto.randomUUID ? crypto.randomUUID() : newId();
@@ -2472,10 +2568,10 @@ async function exportBook(kind) {
                     + images.map((im, n) => `<item id="i${n}" href="${im.name}" media-type="${im.type}"/>`).join('')
                     + `</manifest>\n<spine toc="ncx">${cover ? '<itemref idref="cover"/>' : ''}${chapters.map((c, n) => `<itemref idref="c${n}"/>`).join('')}</spine>\n</package>\n` },
                 { name: 'OEBPS/nav.xhtml', data: page(title, `<nav epub:type="toc"><h1>${esc(xmlSafe(title))}</h1><ol>`
-                    + `${chapters.map((c, n) => `<li><a href="${file(n)}">${esc(c.label)}</a></li>`).join('')}</ol></nav>`) },
+                    + `${chapters.map((c, n) => `<li><a href="${file(n)}">${esc(xmlSafe(c.name))}</a></li>`).join('')}</ol></nav>`) },
                 { name: 'OEBPS/toc.ncx', data: '<?xml version="1.0" encoding="utf-8"?>\n<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">'
                     + `<head><meta name="dtb:uid" content="urn:uuid:${id}"/></head><docTitle><text>${esc(xmlSafe(title))}</text></docTitle><navMap>`
-                    + chapters.map((c, n) => `<navPoint id="n${n}" playOrder="${n + 1}"><navLabel><text>${esc(c.label)}</text></navLabel><content src="${file(n)}"/></navPoint>`).join('')
+                    + chapters.map((c, n) => `<navPoint id="n${n}" playOrder="${n + 1}"><navLabel><text>${esc(xmlSafe(c.name))}</text></navLabel><content src="${file(n)}"/></navPoint>`).join('')
                     + '</navMap></ncx>\n' },
                 { name: 'OEBPS/style.css', data: css ? `${EPUB_CSS}\n/* 메시지에 들어 있던 꾸밈 */\n${css}\n` : EPUB_CSS },
                 ...images.map((im) => ({ name: `OEBPS/${im.name}`, data: im.data })),
@@ -2483,7 +2579,7 @@ async function exportBook(kind) {
                     { name: 'OEBPS/cover.jpg', data: cover },
                     { name: 'OEBPS/cover.xhtml', data: page('표지', '<div class="cover"><img src="cover.jpg" alt="표지"/></div>') },
                 ] : []),
-                ...chapters.map((c, n) => ({ name: `OEBPS/${file(n)}`, data: page(c.label, `<h2 class="ch">${esc(c.label)}</h2>\n${c.xhtml}`) })),
+                ...chapters.map((c, n) => ({ name: `OEBPS/${file(n)}`, data: page(xmlSafe(c.name), `<h2 class="ch">${esc(c.label)}</h2>${c.title ? `<p class="cht">${esc(xmlSafe(c.title))}</p>` : ''}\n${c.xhtml}`) })),
             ];
             saveBlob(zipStore(files, 'application/epub+zip'), exportFileName('epub'));
         }

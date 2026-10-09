@@ -363,6 +363,14 @@ body.pbk-open {
     color: var(--pbk-accent);
 }
 
+.pbk-ch-title {
+    margin-top: 0.7em;
+    font-size: 1.25em;
+    font-weight: 700;
+    line-height: 1.4;
+    text-indent: 0;
+}
+
 .pbk-ch-orn {
     width: 2.4em;
     height: 1px;
@@ -927,6 +935,42 @@ body.pbk-open {
     overflow: hidden;
 }
 
+.pbk-toc li[data-i] {
+    padding-right: 72px;
+}
+
+.pbk-toc-title {
+    margin-left: 4px;
+    color: var(--pbk-ink);
+    font-weight: 700;
+}
+
+.pbk-toc-acts {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    display: flex;
+    gap: 2px;
+}
+
+.pbk-toc-acts button {
+    width: 30px;
+    height: 30px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--pbk-muted);
+    font-size: 12px;
+    cursor: pointer;
+    opacity: 0.7;
+}
+
+.pbk-toc-acts button:hover {
+    opacity: 1;
+    color: var(--pbk-accent);
+    background: var(--pbk-line);
+}
+
 .pbk-toc-s mark {
     background: rgba(255, 196, 0, 0.45);
     color: inherit;
@@ -957,6 +1001,20 @@ body.pbk-open {
     gap: 10px;
     padding: 10px 2px;
     border-bottom: 1px solid var(--pbk-line);
+}
+
+.pbk-group {
+    margin: 18px 0 2px;
+    padding: 0 2px 6px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--pbk-accent);
+    border-bottom: 1px solid var(--pbk-line);
+}
+
+.pbk-group:first-child {
+    margin-top: 2px;
 }
 
 .pbk-row[hidden] {
