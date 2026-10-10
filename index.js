@@ -2607,7 +2607,7 @@ function addSettingsDrawer() {
     const box = el('div', 'pbk-st-settings', `
         <div class="inline-drawer">
             <div class="inline-drawer-toggle inline-drawer-header">
-                <b>Paperback · 책으로 읽기</b>
+                <b>📖 책으로 읽기</b>
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content">
