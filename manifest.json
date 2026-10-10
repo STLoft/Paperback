@@ -1,12 +1,12 @@
 {
-    "display_name": "📖 책으로 읽기",
+    "display_name": "📖 책으로 읽기 (Paperback)",
     "loading_order": 100,
     "requires": [],
     "optional": [],
     "js": "index.js",
     "css": "style.css",
     "author": "STLoft",
-    "version": "0.7.1",
+    "version": "0.7.2",
     "homePage": "https://github.com/STLoft/ST-Paperback",
     "auto_update": true
 }
