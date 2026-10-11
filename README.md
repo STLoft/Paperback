@@ -5,7 +5,7 @@ SillyTavern 채팅을 책처럼 쪽으로 나누어 넘겨 읽는 확장입니�
 ## 설치
 
 1. SillyTavern → 확장(Extensions) → **Install extension**에 이 저장소의 git 주소를 넣습니다.
-2. 또는 이 폴더를 `SillyTavern/data/<사용자>/extensions/st-paperback`(또는 `public/scripts/extensions/third-party/st-paperback`)에 복사한 뒤 새로 고칩니다.
+2. 또는 이 폴더를 `SillyTavern/data/<사용자>/extensions/Paperback`(또는 `public/scripts/extensions/third-party/Paperback`)에 복사한 뒤 새로 고칩니다.
 
 ## 여는 방법
 
